@@ -12,8 +12,17 @@ const escapes = {
   '"': '&quot;',
   "'": '&#39;',
 }
+export function canDisplayMedia(url) {
+  return (
+    isLocalMedia(url) ||
+    (typeof url === 'string' &&
+      (/^\/images\/[a-zA-Z0-9_-]+\.(?:png|jpeg|jpg|webp)$/i.test(url) ||
+        /^blob:/i.test(url) ||
+        Boolean(dataMediaType(url, 'image') || dataMediaType(url, 'audio'))))
+  )
+}
 export function mediaAttributes(url) {
-  if (!url) return ''
+  if (!canDisplayMedia(url)) return ''
   const safe = String(isLocalMedia(url) ? url : assetPath(url)).replace(
     /[&<>"']/g,
     (ch) => escapes[ch],

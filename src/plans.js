@@ -2,11 +2,12 @@ import {
   journalDatabase,
   requestDone,
   transactionDone,
-  announce,
+  announceMutation,
   onExternalChange,
   localAuthor,
   propagatePrivacy,
   setPrivacyMarker,
+  markOutbox,
 } from './storage.js'
 import { authorship } from './journal.js'
 const prefix = 'xiaorizi.plans.v1:'
@@ -37,7 +38,12 @@ export function onPlansChange(callback) {
   if (!subscribers.size) {
     globalThis.addEventListener?.('storage', storageChanged)
     unsubscribeUpdates = onExternalChange((event) => {
-      if (['plans', 'cloud', 'restore'].includes(event)) notify()
+      if (
+        ['plans', 'cloud', 'restore', 'local-only', 'private-restore'].includes(
+          event,
+        )
+      )
+        notify()
     })
   }
   subscribers.add(callback)
@@ -68,7 +74,6 @@ function keysStartingWith(storage, start) {
   return keys
 }
 
-const itemKey = (id) => items + encodeURIComponent(id)
 const rowKey = (id, stage, year) =>
   encodeURIComponent(id) + ':' + stage + ':' + (year ?? '')
 
@@ -139,6 +144,25 @@ export function legacyPlanSnapshot() {
       history.get(data.planId).push(data)
     }
   }
+  // Some older pages wrote an annual step separately. Keep it even if its original
+  // task row has already migrated, recovering an independent private archive.
+  const known = new Set(rows.map((row) => row.id))
+  for (const [id, steps] of history) {
+    if (known.has(id) || !steps.length) continue
+    const row = steps[0],
+      timestamp = row.doneAt || new Date().toISOString()
+    rows.push({
+      id,
+      title: row.planTitle || row.title,
+      kind: row.kind,
+      setting: row.setting || 'any',
+      date: row.eventDate || row.date || '',
+      sourceEntryId: row.sourceEntryId || '',
+      visibility: 'private',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+  }
   return {
     plans: rows.map((p) => withHistory(p, history.get(p.id) || [])),
     generation: raw.get(linkedGeneration) || '',
@@ -165,45 +189,6 @@ export async function readPlans() {
 
 async function editPlans(operation) {
   const db = await journalDatabase()
-  if (!db) {
-    const write = () => {
-      const previous = legacyPlanSnapshot()
-      const change = operation(previous.plans, previous.generation)
-      if (!change.put && !change.remove) return change.result
-      if (change.put?.visibility === 'private')
-        throw new Error('此浏览器未开放 IndexedDB，无法保存仅自己可见的清单。')
-      const all = previous.plans.filter(
-        (p) => p.id !== (change.put?.id || change.remove),
-      )
-      if (change.put) all.push(change.put)
-      const next = planSnapshotEntries(
-        all,
-        change.generation ?? previous.generation,
-      )
-      const storage = store()
-      const touched = new Set(
-        [...previous.raw.keys(), ...next.keys()].filter(
-          (key) => previous.raw.get(key) !== next.get(key),
-        ),
-      )
-      try {
-        for (const key of touched)
-          if (next.has(key)) storage.setItem(key, next.get(key))
-          else storage.removeItem(key)
-      } catch (e) {
-        for (const key of touched)
-          if (previous.raw.has(key)) storage.setItem(key, previous.raw.get(key))
-          else storage.removeItem(key)
-        throw e
-      }
-      notify()
-      announce('plans')
-      return change.result
-    }
-    return globalThis.navigator?.locks
-      ? navigator.locks.request('xiaorizi-local-journal', write)
-      : write()
-  }
   const tx = db.transaction(
       ['plans', 'records', 'places', 'settings'],
       'readwrite',
@@ -222,6 +207,11 @@ async function editPlans(operation) {
       const id = change.put?.id || change.remove
       if (id) {
         const prior = read.result.find((p) => p.id === id)
+        if (
+          prior?.visibility === 'shared' ||
+          change.put?.visibility === 'shared'
+        )
+          markOutbox(tx)
         if (
           change.put?.visibility === 'private' ||
           prior?.visibility === 'private'
@@ -255,7 +245,7 @@ async function editPlans(operation) {
   }
   if (change.put || change.remove) {
     notify()
-    announce('plans')
+    announceMutation(tx, 'plans')
   }
   return change.result
 }
@@ -531,10 +521,6 @@ export function derivePlanLists(plans, now = new Date()) {
 // The generation prevents a recreated task from reusing a deleted task's journal identity.
 export async function exportPlanSnapshot(transaction) {
   const db = transaction ? null : await journalDatabase()
-  if (!db && !transaction) {
-    const { plans, generation } = legacyPlanSnapshot()
-    return { plans, generation }
-  }
   const tx = transaction || db.transaction(['plans', 'settings'])
   const [plans, generation] = await Promise.all([
     requestDone(tx.objectStore('plans').getAll()),
@@ -546,16 +532,5 @@ export function isPlanStorageKey(key) {
   return (
     key === linkedGeneration || key.startsWith(items) || key.startsWith(steps)
   )
-}
-export function planSnapshotEntries(plans, generation) {
-  const result = new Map()
-  if (generation) result.set(linkedGeneration, generation)
-  for (const plan of plans) {
-    const { completions, reopened, doneAt, ...fields } = plan
-    result.set(itemKey(fields.id), JSON.stringify(fields))
-    for (const row of [...completions, ...reopened])
-      result.set(steps + row.key, JSON.stringify(row))
-  }
-  return result
 }
 export const notifyPlanRestore = notify

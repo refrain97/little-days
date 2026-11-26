@@ -2357,3 +2357,38 @@ h1 {
   color: #776953;
   font-size: 0.85rem;
 }
+.local-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .65rem .8rem;
+  margin: 0 0 1rem;
+  font-size: .86rem;
+  background: #fff3dd;
+  border: 1px solid #d7bf96;
+  border-radius: .8rem;
+  color: #654d35;
+}
+.local-status[hidden] { display: none; }
+.local-status button {
+  flex: none;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  text-decoration: underline;
+  text-underline-offset: .2em;
+  padding: .4rem 0;
+}
+.backup-nudge {background: #f7f4ea; border-color: #ddd4bd;}
+
+.backup-tools #backup-title {
+  margin-top: 1.2rem;
+}
+.backup-tools [data-private-backup-download]:not([hidden]),
+.backup-tools [data-backup-download]:not([hidden]) {
+  display: inline-block;
+  margin-right: 0.6rem;
+  color: var(--plum);
+  text-underline-offset: 0.18em;
+}

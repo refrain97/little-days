@@ -36,6 +36,12 @@ GitHub 的细粒度令牌目前限制 repository collaborator 和 outside collab
 - 已共享内容改为「仅自己」后，下次成功同步会撤回分支当前版本中的共享内容。回收站 `shared/trash/` 中的修改快照和删除项目保留 30 天，到期后在下一次同步清理。应用关闭期间不会执行清理。Git 旧提交、克隆和对方已有的备份仍可能含旧副本。误传密钥时应先撤销或轮换。[GitHub 敏感数据清除指南](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
 - 可选的 AI 接口、模型和个人 API Key 在「我的小天地」配置。只有「一起看」记录可主动调用云 AI，确认本次内容和接收方后才发送。PAT 和 API Key 仅保存在配置它们的设备，排除在共享数据、完整备份和静态发布文件之外。
 
+## 离线、授权过期和私人备份
+
+- 首屏先读设备上的 IndexedDB。手记、照片、原声、待同步状态和离线页面资源都存放在 IndexedDB。联网后先查私库及分支 HEAD，分支有新提交时再比较 Git Trees 的文件 SHA，只取新增或变化的文件。私库附件由带授权的 GitHub REST 请求获取，保存到本机并通过 Blob URL 显示。
+- 看到「GitHub 授权已失效」时，点「更新 Token」，为同一数据私库生成新的 Fine-grained PAT。保存后会自动补传等待中的共享改动。旧令牌可以在 GitHub 上撤销。
+- 需要单独保存私人内容时，打开「我的小天地 → 私人手记备份」。在 Safari 将 JSON 保存到“文件”后，点「文件已保存」记录本次日期。超过 14 天会给出轻量提醒。导入私人备份会把私人手记、附件及清单合并到当前设备。换网址或整本迁移可使用另一个「整本备份与迁移」入口。
+
 ## 在其他 GitHub 账号从零部署
 
 1. 在 GitHub 的 **New repository** 新建 **Public** 代码仓库，默认分支用 `main`。把本项目源码、内置示例素材及 `.github/workflows/deploy.yml` 提交并推送到该仓库。项目自带的 `.gitignore` 将个人备份、测试截图和本地凭据排除在分发文件之外。

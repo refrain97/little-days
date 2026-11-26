@@ -1,7 +1,5 @@
 import { readProfile } from './cloud-profile.js'
 import {
-  loadEntries,
-  saveEntries,
   createEntry,
   upgradeDiningRecords,
   SEED_ENTRIES,
@@ -17,6 +15,7 @@ import {
   blobDataUrl,
   observeMedia,
   mediaAttributes,
+  canDisplayMedia,
 } from './media-store.js'
 export { mediaAttributes }
 
@@ -31,7 +30,6 @@ const listeners = new Set()
 const newToken = () =>
   globalThis.crypto?.randomUUID?.() ||
   Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
-const tabId = newToken()
 const kinds = ['image', 'audio']
 const recordStores = ['records', 'media', 'settings', 'plans', 'places']
 const lock = (fn) =>
@@ -63,8 +61,17 @@ export function localAuthor(previous) {
     updatedBy: actor || previous?.updatedBy,
   })
 }
+export function isSharedMutation(event) {
+  return (
+    event !== 'cloud' && event !== 'local-only' && event !== 'private-restore'
+  )
+}
+const dirtyTransactions = new WeakSet()
+export function announceMutation(tx, event = 'updated') {
+  announce(dirtyTransactions.has(tx) ? event : 'local-only')
+}
 export function announce(event = 'updated', local = false) {
-  if (event !== 'cloud') signalCloudChange()
+  if (isSharedMutation(event)) signalCloudChange()
   if (channel) channel.postMessage(event)
   else
     try {
@@ -73,7 +80,7 @@ export function announce(event = 'updated', local = false) {
   if (local) for (const fn of listeners) fn(event)
 }
 
-function writeSplit(stores, entry, previous, paths = {}) {
+export function writeSplit(stores, entry, previous, paths = {}) {
   const { records, media } = stores
   const meta = { ...entry }
   for (const kind of kinds) {
@@ -113,18 +120,43 @@ function writeSplit(stores, entry, previous, paths = {}) {
   records.put(meta)
   return meta
 }
+// The revision and the underlying edits commit together. The sync base retains
+// identifiers for deletions, so the revision can cover multiple offline edits.
+export function markOutbox(tx) {
+  if (dirtyTransactions.has(tx)) return
+  tx.objectStore('settings').put(newToken(), 'shared-outbox-revision')
+  dirtyTransactions.add(tx)
+}
+export async function ackOutbox(revision) {
+  if (!revision) return
+  const db = await journalDatabase()
+  const tx = db.transaction('settings', 'readwrite'),
+    table = tx.objectStore('settings')
+  const read = table.get('shared-outbox-revision')
+  read.onsuccess = () => {
+    if (read.result === revision) table.delete('shared-outbox-revision')
+  }
+  await transactionDone(tx)
+}
+function visibleRecord(row) {
+  // Earlier notebooks may contain an external media link. Neither the view nor
+  // the editor should turn a private repository URL into a public image request.
+  for (const kind of kinds)
+    if (row[kind] && !canDisplayMedia(row[kind])) row[kind] = ''
+  return row
+}
 function storesFor(tx) {
   return { records: tx.objectStore('records'), media: tx.objectStore('media') }
 }
 function openDatabase() {
   if (opening) return opening
   opening = new Promise((resolve, reject) => {
-    if (!globalThis.indexedDB) return resolve(null)
+    if (!globalThis.indexedDB) return reject(storageUnavailable())
     let req
     try {
-      req = indexedDB.open('little-days', 3)
+      req = indexedDB.open('little-days', 4)
     } catch {
-      return resolve(null)
+      return reject(storageUnavailable())
     }
     let upgradeError
     let blocked = false
@@ -141,6 +173,10 @@ function openDatabase() {
         tx = req.transaction
       if (!db.objectStoreNames.contains('records'))
         db.createObjectStore('records', { keyPath: 'id' })
+      const records = tx.objectStore('records')
+      for (const path of ['cloudPhotoPath', 'cloudAudioPath']) {
+        if (!records.indexNames.contains(path)) records.createIndex(path, path)
+      }
       if (!db.objectStoreNames.contains('settings'))
         db.createObjectStore('settings')
       if (!db.objectStoreNames.contains('plans'))
@@ -186,16 +222,21 @@ function openDatabase() {
         !upgradeError &&
         ['SecurityError', 'InvalidStateError'].includes(req.error?.name)
       )
-        return resolve(null)
+        return reject(storageUnavailable())
       reject(upgradeError || req.error || new Error('本机手记未能打开。'))
     }
   })
-  return opening
+  return opening.catch((error) => {
+    opening = null
+    throw error
+  })
+}
+function storageUnavailable() {
+  return new Error(
+    '本机 IndexedDB 存储不可用。请允许此网站使用本地存储，再重试保存。',
+  )
 }
 
-function favoriteBits(storage) {
-  return favoriteBitsFromKeys(favoriteKeys(storage))
-}
 function favoriteBitsFromKeys(keys) {
   const odd = new Set()
   for (const key of keys) {
@@ -205,20 +246,6 @@ function favoriteBitsFromKeys(keys) {
     else odd.add(id)
   }
   return odd
-}
-function readFallbackEntries() {
-  const entries = loadEntries()
-  let bits
-  try {
-    bits = favoriteBits(localStorage)
-  } catch {
-    return entries
-  }
-  return entries.map((entry) =>
-    bits.has(encodeURIComponent(entry.id))
-      ? { ...entry, favorite: !entry.favorite }
-      : entry,
-  )
 }
 function entriesFromSnapshot(snapshot) {
   const raw = snapshot?.get(journalKey)
@@ -247,21 +274,6 @@ function legacySnapshot() {
     return null
   }
 }
-function clearCopiedLegacy(copy) {
-  if (!copy) return
-  try {
-    const after = legacySnapshot()
-    if (
-      !after ||
-      after.size !== copy.size ||
-      [...copy].some(([k, v]) => after.get(k) !== v)
-    )
-      return
-    for (const key of copy.keys()) localStorage.removeItem(key)
-  } catch {
-    /* The committed database is authoritative even if cleanup is unavailable. */
-  }
-}
 export async function journalDatabase() {
   if (initialized) return initialized
   initialized = initialize().catch((error) => {
@@ -270,69 +282,180 @@ export async function journalDatabase() {
   })
   return initialized
 }
+
+// Keep settings and media changes in one transaction with every migrated row.
+// A short-lived receipt makes a reload between commit and legacy cleanup idempotent.
 async function initialize() {
   const db = await openDatabase()
-  if (!db) return null
-  const { legacyPlanSnapshot, isPlanStorageKey } = await import('./plans.js')
+  const { legacyPlanSnapshot, normalPlan } = await import('./plans.js')
+  const journal = legacySnapshot(),
+    plans = legacyPlanSnapshot()
+  const sources = [...(journal || []), ...plans.raw].filter(
+    ([, v]) => v !== null,
+  )
+  const stamp = sources.length
+    ? JSON.stringify(sources.sort(([a], [b]) => a.localeCompare(b)))
+    : ''
   const tx = db.transaction(recordStores, 'readwrite')
   const done = transactionDone(tx),
     stores = storesFor(tx),
     settings = tx.objectStore('settings')
+  const started = settings.get('initialized'),
+    plansReady = settings.get('plans-migrated')
+  const diningReady = settings.get('dining-examples-v1'),
+    privacyReady = settings.get('privacy-initialized-v1')
+  const receipt = settings.get('legacy-import-receipt')
   let importError
-  let copiedLegacy, copiedPlans
-  const plansInitialized = settings.get('plans-migrated')
-  plansInitialized.onsuccess = () => {
-    if (plansInitialized.result) return
-    try {
-      const previous = legacyPlanSnapshot()
-      copiedPlans = previous.raw
-      for (const plan of previous.plans) tx.objectStore('plans').put(plan)
-      settings.put(previous.generation, 'plan-generation')
-      settings.put(true, 'plans-migrated')
-    } catch (error) {
-      importError = error
-      tx.abort()
-    }
-  }
-  function upgradeDining() {
-    const initializedPlaces = settings.get('places-initialized')
-    initializedPlaces.onsuccess = () => {
-      if (!initializedPlaces.result) {
-        propagatePrivacy(tx)
-        settings.put(true, 'places-initialized')
-      }
-    }
-    const mig = settings.get('dining-examples-v1')
-    mig.onsuccess = () => {
-      if (mig.result) return
-      const read = stores.records.getAll()
-      read.onsuccess = () => {
-        const prev = read.result,
-          result = upgradeDiningRecords(prev, true)
-        if (result !== prev)
-          for (const entry of result) stores.records.put(entry)
-        settings.put(true, 'dining-examples-v1')
-      }
-    }
-  }
-  const started = settings.get('initialized')
-  started.onsuccess = () => {
-    if (started.result) {
-      upgradeDining()
+  receipt.onsuccess = () => {
+    if (
+      started.result &&
+      plansReady.result &&
+      diningReady.result &&
+      privacyReady.result &&
+      (!stamp || stamp === receipt.result)
+    )
       return
-    }
-    const count = stores.records.count()
-    count.onsuccess = () => {
+    const records = stores.records.getAll(),
+      table = tx.objectStore('plans'),
+      existingPlans = table.getAll()
+    existingPlans.onsuccess = () => {
       try {
-        if (!count.result) {
-          copiedLegacy = legacySnapshot()
-          for (const entry of entriesFromSnapshot(copiedLegacy))
-            writeSplit(stores, createEntry(entry))
+        const copying = stamp && stamp !== receipt.result
+        const established = Boolean(started.result || records.result.length)
+        const oldEntries =
+          copying && journal?.get(journalKey)
+            ? entriesFromSnapshot(journal)
+            : []
+        const knownRecords = new Map(records.result.map((row) => [row.id, row]))
+        const knownPlans = new Map(
+          existingPlans.result.map((row) => [row.id, row]),
+        )
+        const recordIds = new Map(),
+          planIds = new Map()
+        // A separate old notebook can exist beside a newer IndexedDB notebook.
+        // Keep differing edits as private recoveries; do not overwrite a newer record.
+        for (const row of oldEntries) {
+          const current = knownRecords.get(row.id)
+          if (
+            current &&
+            (row.isSample ||
+              JSON.stringify(createEntry(current)) ===
+                JSON.stringify(createEntry(row)))
+          )
+            continue
+          const id =
+            established && !row.isSample
+              ? 'legacy-recovery-' + newToken()
+              : row.id
+          recordIds.set(row.id, id)
         }
+        for (const row of copying ? plans.plans : []) {
+          const current = knownPlans.get(row.id)
+          if (
+            current &&
+            JSON.stringify(normalPlan(current)) ===
+              JSON.stringify(normalPlan(row))
+          )
+            continue
+          planIds.set(
+            row.id,
+            plansReady.result || current ? 'legacy-plan-' + newToken() : row.id,
+          )
+        }
+        // Completed tasks use their plan ID in their journal link. Retain this
+        // relationship inside the recovered notebook without reusing a cloud ID.
+        for (const id of recordIds.keys()) {
+          const related = /^plan-note-([^:]+)(:(?:task|prepare|day):\d*)$/.exec(
+            id,
+          )
+          if (!related) continue
+          let planId
+          try {
+            planId = decodeURIComponent(related[1])
+          } catch {
+            continue
+          }
+          const restoredPlan = planIds.get(planId)
+          if (restoredPlan && restoredPlan !== planId)
+            recordIds.set(
+              id,
+              'plan-note-' + encodeURIComponent(restoredPlan) + related[2],
+            )
+        }
+        for (const row of oldEntries) {
+          if (!recordIds.has(row.id)) continue
+          const entry = createEntry({
+            ...row,
+            id: recordIds.get(row.id),
+            visibility:
+              established && !row.isSample ? 'private' : row.visibility,
+          })
+          writeSplit(stores, entry)
+          if (entry.visibility === 'shared' && !entry.isSample) markOutbox(tx)
+        }
+        for (const row of plans.plans) {
+          if (!planIds.has(row.id)) continue
+          const id = planIds.get(row.id),
+            visibility = plansReady.result ? 'private' : row.visibility
+          const source = (oldId) => recordIds.get(oldId) || oldId
+          const steps = (list) =>
+            list.map((step) => {
+              const key =
+                encodeURIComponent(id) +
+                ':' +
+                step.stage +
+                ':' +
+                (step.year ?? '')
+              return {
+                ...step,
+                id: key,
+                key,
+                planId: id,
+                visibility,
+                sourceEntryId: source(step.sourceEntryId),
+              }
+            })
+          table.put({
+            ...row,
+            id,
+            visibility,
+            sourceEntryId: source(row.sourceEntryId),
+            completions: steps(row.completions),
+            reopened: steps(row.reopened),
+          })
+          if (visibility === 'shared') markOutbox(tx)
+        }
+        if (copying && !journal?.get(journalKey)) {
+          for (const key of favoriteBitsFromKeys(journal?.keys() || [])) {
+            const row = knownRecords.get(decodeURIComponent(key))
+            if (row) {
+              stores.records.put({ ...row, favorite: !row.favorite })
+              if (row.visibility === 'shared' && !row.isSample) markOutbox(tx)
+            }
+          }
+        }
+        if (!established && !journal?.get(journalKey)) {
+          for (const row of SEED_ENTRIES) writeSplit(stores, createEntry(row))
+        }
+        if (!plansReady.result)
+          settings.put(plans.generation, 'plan-generation')
+        if (!diningReady.result) {
+          const all = stores.records.getAll()
+          all.onsuccess = () => {
+            const rows = upgradeDiningRecords(all.result, true)
+            if (rows !== all.result)
+              for (const row of rows) stores.records.put(row)
+            propagatePrivacy(tx)
+          }
+        } else propagatePrivacy(tx)
         settings.put(true, 'initialized')
-        upgradeDining()
-      } catch (err) {
-        importError = err
+        settings.put(true, 'plans-migrated')
+        settings.put(true, 'places-initialized')
+        settings.put(true, 'dining-examples-v1')
+        settings.put(true, 'privacy-initialized-v1')
+        if (stamp) settings.put(stamp, 'legacy-import-receipt')
+      } catch (error) {
+        importError = error
         tx.abort()
       }
     }
@@ -342,82 +465,40 @@ async function initialize() {
   } catch (error) {
     throw importError || error
   }
-  // Only remove source data this initialization actually copied. An old localStorage
-  // snapshot beside an established database may contain unmerged edits from an older browser.
-  clearCopiedLegacy(copiedLegacy)
-  if (copiedPlans)
-    for (const [key, value] of copiedPlans) {
-      if (isPlanStorageKey(key) && localStorage.getItem(key) === value)
-        localStorage.removeItem(key)
+  // If an older page changes a key during migration, keep it for the next import.
+  if (stamp) {
+    try {
+      if (!sources.every(([key, value]) => localStorage.getItem(key) === value))
+        return db
+      for (const [key] of sources) localStorage.removeItem(key)
+    } catch {
+      return db
     }
-  await migratePrivateState(db)
+  }
+  if (stamp || receipt.result) {
+    const cleanup = db.transaction('settings', 'readwrite'),
+      table = cleanup.objectStore('settings')
+    const read = table.get('legacy-import-receipt')
+    read.onsuccess = () => {
+      if (read.result === (stamp || receipt.result))
+        table.delete('legacy-import-receipt')
+    }
+    await transactionDone(cleanup)
+  }
   return db
 }
-
-async function migratePrivateState(db) {
-  // An older tab could leave an unmerged plaintext journal beside an established database.
-  // Bring its private rows over without replacing the current copy or deleting shared legacy edits.
-  let source,
-    legacy = []
-  try {
-    source = localStorage.getItem(journalKey)
-    const parsed = source ? JSON.parse(source) : []
-    if (Array.isArray(parsed)) legacy = parsed
-  } catch {}
-  const privateRows = legacy.filter((row) => row?.visibility === 'private')
-  const tx = db.transaction(recordStores, 'readwrite'),
-    done = transactionDone(tx)
-  const settings = tx.objectStore('settings'),
-    stores = storesFor(tx),
-    migrated = settings.get('privacy-initialized-v1')
-  let cause
-  migrated.onsuccess = () => {
-    if (migrated.result && !privateRows.length) return
-    const existing = stores.records.getAllKeys()
-    existing.onsuccess = () => {
-      try {
-        const used = new Set(existing.result)
-        for (const row of privateRows) {
-          const id = used.has(row.id) ? 'legacy-private-' + newToken() : row.id
-          const entry = createEntry({ ...row, id, visibility: 'private' })
-          writeSplit(stores, entry)
-          used.add(entry.id)
-        }
-        propagatePrivacy(tx)
-        settings.put(true, 'privacy-initialized-v1')
-      } catch (e) {
-        cause = e
-        tx.abort()
-      }
-    }
-  }
-  try {
-    await done
-  } catch (e) {
-    throw cause || e
-  }
-  if (!privateRows.length) return
-  if (localStorage.getItem(journalKey) === source) {
-    const shared = legacy.filter((row) => row?.visibility !== 'private')
-    if (shared.length) localStorage.setItem(journalKey, JSON.stringify(shared))
-    else localStorage.removeItem(journalKey)
-  }
-}
-
 export async function readRecords() {
   const db = await journalDatabase()
-  const rows = db
-    ? await requestDone(
-        db.transaction('records').objectStore('records').getAll(),
-      )
-    : readFallbackEntries()
+  const rows = await requestDone(
+    db.transaction('records').objectStore('records').getAll(),
+  )
   return rows
-    .map(createEntry)
+    .map((row) => visibleRecord(createEntry(row)))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 async function readMediaBlob(ref) {
   const db = await journalDatabase()
-  if (!db || !isLocalMedia(ref)) return null
+  if (!isLocalMedia(ref)) return null
   const value = await requestDone(
     db.transaction('media').objectStore('media').get(ref),
   )
@@ -429,13 +510,8 @@ export function observeLocalMedia() {
   return observeMedia(readMediaBlob)
 }
 
-async function fullRecords(id, onSnapshot) {
+async function fullRecords(id, onSnapshot, acceptRecord) {
   const db = await journalDatabase()
-  if (!db) {
-    const all = readFallbackEntries()
-    onSnapshot?.()
-    return (id == null ? all : all.filter((e) => e.id === id)).map(createEntry)
-  }
   const tx = db.transaction(onSnapshot ? recordStores : ['records', 'media']),
     stores = storesFor(tx)
   const head = id == null ? stores.records.getAll() : stores.records.get(id)
@@ -452,9 +528,9 @@ async function fullRecords(id, onSnapshot) {
       tx.abort()
       return
     }
-    rows = (id == null ? head.result : head.result ? [head.result] : []).map(
-      createEntry,
-    )
+    rows = (id == null ? head.result : head.result ? [head.result] : [])
+      .filter((row) => !acceptRecord || acceptRecord(row))
+      .map(createEntry)
     for (const row of rows)
       for (const kind of kinds)
         if (isLocalMedia(row[kind])) mediaRefs.push({ row, kind })
@@ -490,10 +566,11 @@ async function fullRecords(id, onSnapshot) {
 }
 export async function readRecordWithMedia(id) {
   if (!id) return null
-  return (await fullRecords(id))[0] || null
+  const row = (await fullRecords(id))[0]
+  return row ? visibleRecord(row) : null
 }
-export function exportRecords(onSnapshot) {
-  return fullRecords(null, onSnapshot)
+export function exportRecords(onSnapshot, acceptRecord) {
+  return fullRecords(null, onSnapshot, acceptRecord)
 }
 
 export async function putRecord(fields, original) {
@@ -526,68 +603,53 @@ export async function putRecord(fields, original) {
     return createEntry({ ...merged, ...localAuthor(prior) })
   }
   let result = draft
-  if (db) {
-    const tx = db.transaction(recordStores, 'readwrite'),
-      stores = storesFor(tx)
-    const prior = stores.records.get(draft.id)
-    let issue
-    prior.onsuccess = () => {
-      try {
-        const entry = merge(prior.result)
-        result = writeSplit(stores, entry, prior.result)
+  const tx = db.transaction(recordStores, 'readwrite'),
+    stores = storesFor(tx)
+  const prior = stores.records.get(draft.id)
+  let issue
+  prior.onsuccess = () => {
+    try {
+      const entry = merge(prior.result)
+      result = writeSplit(stores, entry, prior.result)
+      if (
+        !entry.isSample &&
+        (entry.visibility === 'shared' || prior.result?.visibility === 'shared')
+      )
+        markOutbox(tx)
+      if (
+        entry.visibility === 'private' ||
+        prior.result?.visibility === 'private' ||
+        entry.id.startsWith('plan-note-')
+      ) {
         if (
           entry.visibility === 'private' ||
-          prior.result?.visibility === 'private' ||
-          entry.id.startsWith('plan-note-')
-        ) {
-          if (
-            entry.visibility === 'private' ||
-            prior.result?.visibility === 'private'
-          )
-            setPrivacyMarker(
-              tx,
-              'entries',
-              entry.id,
-              entry.visibility === 'private',
-            )
-          propagatePrivacy(tx, (scope) => {
-            if (scope.entries.has(entry.id)) result.visibility = 'private'
-          })
-        } else if (
-          entry.diningSource === 'out' ||
-          prior.result?.diningSource === 'out'
+          prior.result?.visibility === 'private'
         )
-          reconcilePlaces(tx)
-      } catch (e) {
-        issue = e
-        tx.abort()
-      }
-    }
-    try {
-      await transactionDone(tx)
-    } catch (e) {
-      throw issue || e
-    }
-  } else {
-    await lock(() => {
-      const previous = loadEntries(),
-        entry = merge(previous.find((e) => e.id === draft.id))
-      if (entry.visibility === 'private')
-        throw new Error('此浏览器未开放 IndexedDB，无法保存仅自己可见的内容。')
-      result = entry
-      const others = previous.filter((e) => e.id !== entry.id)
-      const flipped = favoriteBits(localStorage).has(
-        encodeURIComponent(entry.id),
+          setPrivacyMarker(
+            tx,
+            'entries',
+            entry.id,
+            entry.visibility === 'private',
+          )
+        propagatePrivacy(tx, (scope) => {
+          if (scope.entries.has(entry.id)) result.visibility = 'private'
+        })
+      } else if (
+        entry.diningSource === 'out' ||
+        prior.result?.diningSource === 'out'
       )
-      if (kinds.some((k) => isLocalMedia(entry[k])))
-        throw new Error('请重新打开手记后再保存。')
-      saveEntries([
-        { ...entry, favorite: flipped ? !entry.favorite : entry.favorite },
-        ...others,
-      ])
-    })
+        reconcilePlaces(tx)
+    } catch (e) {
+      issue = e
+      tx.abort()
+    }
   }
-  announce()
+  try {
+    await transactionDone(tx)
+  } catch (e) {
+    throw issue || e
+  }
+  announceMutation(tx)
   return result
 }
 function favoriteKeys(storage) {
@@ -595,67 +657,44 @@ function favoriteKeys(storage) {
 }
 export async function removeRecord(id) {
   const db = await journalDatabase()
-  if (db) {
-    const tx = db.transaction(recordStores, 'readwrite'),
-      stores = storesFor(tx)
-    const req = stores.records.get(id)
-    req.onsuccess = () => {
-      for (const kind of kinds)
-        if (isLocalMedia(req.result?.[kind]))
-          stores.media.delete(req.result[kind])
-      stores.records.delete(id)
-      if (req.result?.visibility === 'private') {
-        setPrivacyMarker(tx, 'entries', id, true)
-        propagatePrivacy(tx)
-      } else if (req.result?.diningSource === 'out') reconcilePlaces(tx)
-    }
-    await transactionDone(tx)
-  } else {
-    await lock(() => {
-      saveEntries(loadEntries().filter((e) => e.id !== id))
-      for (const k of favoriteKeys(localStorage))
-        if (k.startsWith(favoritePrefix + encodeURIComponent(id) + ':'))
-          localStorage.removeItem(k)
-    })
+  const tx = db.transaction(recordStores, 'readwrite'),
+    stores = storesFor(tx)
+  const req = stores.records.get(id)
+  req.onsuccess = () => {
+    for (const kind of kinds)
+      if (isLocalMedia(req.result?.[kind]))
+        stores.media.delete(req.result[kind])
+    stores.records.delete(id)
+    if (req.result?.visibility === 'shared' && !req.result.isSample)
+      markOutbox(tx)
+    if (req.result?.visibility === 'private') {
+      setPrivacyMarker(tx, 'entries', id, true)
+      propagatePrivacy(tx)
+    } else if (req.result?.diningSource === 'out') reconcilePlaces(tx)
   }
-  announce()
+  await transactionDone(tx)
+  announceMutation(tx)
 }
 export async function toggleRecordFavorite(id) {
   const db = await journalDatabase()
   let updated
-  if (db) {
-    const tx = db.transaction('records', 'readwrite'),
-      store = tx.objectStore('records')
-    const req = store.get(id)
-    req.onsuccess = () => {
-      if (req.result) {
-        updated = createEntry({
-          ...req.result,
-          ...localAuthor(req.result),
-          favorite: !req.result.favorite,
-        })
-        store.put({ ...req.result, ...updated })
-      }
-    }
-    await transactionDone(tx)
-  } else {
-    await lock(() => {
-      const current = loadEntries().find((e) => e.id === id)
-      if (!current) return
-      const encoded = encodeURIComponent(id),
-        key = favoritePrefix + encoded + ':' + tabId
-      if (localStorage.getItem(key)) localStorage.removeItem(key)
-      else localStorage.setItem(key, '1')
+  const tx = db.transaction(['records', 'settings'], 'readwrite'),
+    store = tx.objectStore('records')
+  const req = store.get(id)
+  req.onsuccess = () => {
+    if (req.result) {
       updated = createEntry({
-        ...current,
-        favorite: favoriteBits(localStorage).has(encoded)
-          ? !current.favorite
-          : current.favorite,
+        ...req.result,
+        ...localAuthor(req.result),
+        favorite: !req.result.favorite,
       })
-    })
+      store.put({ ...req.result, ...updated })
+      if (updated.visibility === 'shared' && !updated.isSample) markOutbox(tx)
+    }
   }
+  await transactionDone(tx)
   if (!updated) throw new Error('这篇手记已被删除。')
-  announce()
+  announceMutation(tx)
   return updated
 }
 
@@ -665,106 +704,79 @@ export async function replaceRecords(rows, applyLocal, notebook) {
   const db = await journalDatabase()
   await lock(async () => {
     let undo
-    if (db) {
-      const tx = db.transaction(recordStores, 'readwrite'),
-        stores = storesFor(tx),
-        settings = tx.objectStore('settings')
-      const done = transactionDone(tx)
-      let issue
-      try {
-        // Record withdrawals in the same replacement transaction, including rows absent from the backup.
-        const oldRecords = stores.records.getAll()
-        const oldPlans = tx.objectStore('plans').getAll()
-        oldPlans.onsuccess = () => {
-          for (const [kind, old, next] of [
-            ['entries', oldRecords.result, rows],
-            ['freetime', oldPlans.result, notebook?.plans || oldPlans.result],
-          ]) {
-            const present = new Map(next.map((row) => [row.id, row]))
-            for (const row of old)
-              if (row.visibility === 'private' && !present.has(row.id))
-                setPrivacyMarker(tx, kind, row.id, true)
-            for (const row of next)
-              setPrivacyMarker(tx, kind, row.id, row.visibility === 'private')
-          }
-          propagatePrivacy(tx)
+    const tx = db.transaction(recordStores, 'readwrite'),
+      stores = storesFor(tx),
+      settings = tx.objectStore('settings')
+    const done = transactionDone(tx)
+    let issue
+    try {
+      // Record withdrawals in the same replacement transaction, including rows absent from the backup.
+      const oldRecords = stores.records.getAll()
+      const oldPlans = tx.objectStore('plans').getAll()
+      oldPlans.onsuccess = () => {
+        for (const [kind, old, next] of [
+          ['entries', oldRecords.result, rows],
+          ['freetime', oldPlans.result, notebook?.plans || oldPlans.result],
+        ]) {
+          const present = new Map(next.map((row) => [row.id, row]))
+          for (const row of old)
+            if (row.visibility === 'private' && !present.has(row.id))
+              setPrivacyMarker(tx, kind, row.id, true)
+          for (const row of next)
+            setPrivacyMarker(tx, kind, row.id, row.visibility === 'private')
         }
-        stores.records.clear()
-        stores.media.clear()
-        for (const row of rows) writeSplit(stores, createEntry(row))
-        if (notebook) {
-          const plans = tx.objectStore('plans'),
-            places = tx.objectStore('places')
-          plans.clear()
-          places.clear()
-          for (const plan of notebook.plans) plans.put(plan)
-          for (const place of notebook.places || []) places.put(place)
-          settings.put(notebook.generation, 'plan-generation')
-          if (notebook.places) {
-            const represented = new Set(
-              notebook.places
-                .flatMap((place) => [place.name, ...place.aliases])
-                .map(venueKey),
+        propagatePrivacy(tx)
+      }
+      markOutbox(tx)
+      stores.records.clear()
+      stores.media.clear()
+      for (const row of rows) writeSplit(stores, createEntry(row))
+      if (notebook) {
+        const plans = tx.objectStore('plans'),
+          places = tx.objectStore('places')
+        plans.clear()
+        places.clear()
+        for (const plan of notebook.plans) plans.put(plan)
+        for (const place of notebook.places || []) places.put(place)
+        settings.put(notebook.generation, 'plan-generation')
+        if (notebook.places) {
+          const represented = new Set(
+            notebook.places
+              .flatMap((place) => [place.name, ...place.aliases])
+              .map(venueKey),
+          )
+          const missing = rows
+            .filter(
+              (row) =>
+                row.visibility !== 'private' &&
+                !row.isSample &&
+                row.diningSource === 'out' &&
+                row.venueName,
             )
-            const missing = rows
-              .filter(
-                (row) =>
-                  row.visibility !== 'private' &&
-                  !row.isSample &&
-                  row.diningSource === 'out' &&
-                  row.venueName,
-              )
-              .map((row) => venueKey(row.venueName))
-              .filter((key) => !represented.has(key))
-            settings.put([...new Set(missing)], 'removed-place-keys')
-          }
+            .map((row) => venueKey(row.venueName))
+            .filter((key) => !represented.has(key))
+          settings.put([...new Set(missing)], 'removed-place-keys')
         }
-        settings.put(true, 'initialized')
-        const last = settings.put(true, 'dining-examples-v1')
-        last.onsuccess = () => {
-          try {
-            undo = applyLocal(true)
-          } catch (e) {
-            issue = e
-            tx.abort()
-          }
+      }
+      settings.put(true, 'initialized')
+      const last = settings.put(true, 'dining-examples-v1')
+      last.onsuccess = () => {
+        try {
+          undo = applyLocal(true)
+        } catch (e) {
+          issue = e
+          tx.abort()
         }
-      } catch (e) {
-        issue = e
-        tx.abort()
       }
-      try {
-        await done
-      } catch (e) {
-        undo?.()
-        throw issue || e
-      }
-    } else {
-      if (
-        rows.some((r) => r.visibility === 'private') ||
-        notebook?.plans.some((p) => p.visibility === 'private')
-      )
-        throw new Error('恢复私密内容需要可用的 IndexedDB。')
-      const backup = new Map(
-        [
-          journalKey,
-          'xiaorizi.dining-examples.v1',
-          ...favoriteKeys(localStorage),
-        ].map((k) => [k, localStorage.getItem(k)]),
-      )
-      try {
-        undo = applyLocal()
-        for (const k of favoriteKeys(localStorage)) localStorage.removeItem(k)
-        saveEntries(rows)
-        localStorage.setItem('xiaorizi.dining-examples.v1', '1')
-      } catch (e) {
-        localStorage.removeItem(journalKey)
-        undo?.()
-        for (const [k, v] of backup)
-          if (v === null) localStorage.removeItem(k)
-          else localStorage.setItem(k, v)
-        throw e
-      }
+    } catch (e) {
+      issue = e
+      tx.abort()
+    }
+    try {
+      await done
+    } catch (e) {
+      undo?.()
+      throw issue || e
     }
   })
   announce('restore', true)
@@ -873,8 +885,10 @@ export function propagatePrivacy(tx, after) {
       for (const id of scope[kind])
         if (!known.has(kind + ':' + id)) setPrivacyMarker(tx, kind, id, true)
     for (const row of rows.result)
-      if (scope.entries.has(row.id) && row.visibility !== 'private')
+      if (scope.entries.has(row.id) && row.visibility !== 'private') {
         records.put({ ...row, visibility: 'private' })
+        markOutbox(tx)
+      }
     for (const plan of tasks.result)
       if (scope.freetime.has(plan.id)) {
         const history = [...(plan.completions || []), ...(plan.reopened || [])]
@@ -885,6 +899,7 @@ export function propagatePrivacy(tx, after) {
           continue
         const privateRows = (rows) =>
           rows.map((row) => ({ ...row, visibility: 'private' }))
+        if (plan.visibility === 'shared') markOutbox(tx)
         plans.put({
           ...plan,
           visibility: 'private',
@@ -936,6 +951,7 @@ function reconcilePlaces(tx) {
           automatic: true,
         })
         places.put(place)
+        markOutbox(tx)
         known.set(key, place)
       }
       used.add(place.id)
@@ -950,6 +966,7 @@ function reconcilePlaces(tx) {
         )
           withdrawn.add(place.id)
         places.delete(place.id)
+        markOutbox(tx)
       }
     meta.put([...withdrawn], 'withdrawn-places')
   }
@@ -957,15 +974,12 @@ function reconcilePlaces(tx) {
 
 export async function readPlaceProfiles() {
   const db = await journalDatabase()
-  return db
-    ? await requestDone(db.transaction('places').objectStore('places').getAll())
-    : []
+  return requestDone(db.transaction('places').objectStore('places').getAll())
 }
 
 export async function putPlaceProfile(fields, { editing = false } = {}) {
   const db = await journalDatabase()
-  if (!db) throw new Error('保存共享店铺档案需要可用的 IndexedDB。')
-  const tx = db.transaction('places', 'readwrite'),
+  const tx = db.transaction(['places', 'settings'], 'readwrite'),
     table = tx.objectStore('places'),
     done = transactionDone(tx)
   let result, error
@@ -1002,6 +1016,7 @@ export async function putPlaceProfile(fields, { editing = false } = {}) {
         table.delete(other.id)
       }
       table.put(result)
+      markOutbox(tx)
     } catch (e) {
       error = e
       tx.abort()
@@ -1033,12 +1048,14 @@ function suppressPlace(tx, place) {
 
 export async function deletePlaceProfile(id) {
   const db = await journalDatabase()
-  if (!db) return
   const tx = db.transaction(['places', 'settings'], 'readwrite'),
     places = tx.objectStore('places')
   const prior = places.get(id)
   prior.onsuccess = () => {
-    if (prior.result) suppressPlace(tx, prior.result)
+    if (prior.result) {
+      suppressPlace(tx, prior.result)
+      markOutbox(tx)
+    }
     places.delete(id)
   }
   await transactionDone(tx)
@@ -1047,12 +1064,12 @@ export async function deletePlaceProfile(id) {
 
 export async function sharedLocalState() {
   const db = await journalDatabase()
-  if (!db) throw new Error('同步需要可用的 IndexedDB。')
   const actor = publicAuthor(readProfile())
   const tx = db.transaction(
     ['records', 'plans', 'places', 'settings'],
     actor ? 'readwrite' : 'readonly',
   )
+  const outbox = tx.objectStore('settings').get('shared-outbox-revision')
   const withdrawals = readWithdrawals(tx)
   const withdrawn = tx.objectStore('settings').get('withdrawn-places')
   const all = ['records', 'plans', 'places'].map((name) => {
@@ -1081,6 +1098,7 @@ export async function sharedLocalState() {
     places: all[2].result,
     withdrawn: withdrawn.result || [],
     withdrawals: withdrawals.result,
+    outboxRevision: outbox.result || '',
   }
 }
 
@@ -1088,7 +1106,6 @@ export async function sharedLocalState() {
 // that replaces the item. Downloading an attachment can take longer than a local edit.
 export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
   const db = await journalDatabase()
-  if (!db) throw new Error('同步需要可用的 IndexedDB。')
   const tableName = { entries: 'records', freetime: 'plans', places: 'places' }[
     kind
   ]
@@ -1149,7 +1166,7 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
 
 export async function readSharedAttachment(id, kind, expectedRef) {
   const db = await journalDatabase()
-  if (!db || !kinds.includes(kind)) throw new Error('共享附件不可用。')
+  if (!kinds.includes(kind)) throw new Error('共享附件不可用。')
   const tx = db.transaction(['records', 'media']),
     read = tx.objectStore('records').get(id)
   let result, ref
@@ -1173,4 +1190,41 @@ export async function readSharedAttachment(id, kind, expectedRef) {
   return value instanceof Blob
     ? value
     : new Blob([value.bytes], { type: value.type })
+}
+
+// Resolve only content-addressed media already downloaded by a shared record.
+// This index avoids reading private attachments or scanning every journal entry.
+export async function readCachedAttachment(path, type) {
+  const photo = /^shared\/photos\/[a-f0-9]{40}\.jpg$/.test(path)
+  if (!photo && !/^shared\/audio\/[a-f0-9]{40}\.bin$/.test(path)) return null
+  const db = await journalDatabase(),
+    tx = db.transaction(['records', 'media'])
+  const table = tx.objectStore('records'),
+    media = tx.objectStore('media')
+  const cursor = table
+    .index(photo ? 'cloudPhotoPath' : 'cloudAudioPath')
+    .openCursor(IDBKeyRange.only(path))
+  let data
+  cursor.onsuccess = () => {
+    const next = cursor.result
+    if (!next) return
+    const row = next.value,
+      ref = row[photo ? 'image' : 'audio']
+    if (row.visibility !== 'shared' || row.isSample || !isLocalMedia(ref)) {
+      next.continue()
+      return
+    }
+    const read = media.get(ref)
+    read.onsuccess = () => {
+      if (read.result) data = read.result
+      else next.continue()
+    }
+  }
+  await transactionDone(tx)
+  if (!data) return null
+  const stored =
+    data instanceof Blob ? data : new Blob([data.bytes], { type: data.type })
+  return blobDataUrl(
+    stored.type === type ? stored : new Blob([stored], { type }),
+  )
 }

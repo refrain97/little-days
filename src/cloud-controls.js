@@ -71,8 +71,16 @@ export function paintSpaceStatus(root, status) {
   by(root, '[data-connected]').hidden = !status.connected
   by(root, '[data-sync]').disabled = status.phase === 'syncing'
   const token = by(root, '[data-space-token]')
-  token.required = !status.connected
-  token.placeholder = status.connected ? '已保存，留空沿用' : '仅保存在这台设备'
+  token.required = !status.connected || status.needsToken === true
+  token.placeholder = status.needsToken
+    ? '粘贴新 Token，自动补传'
+    : status.connected
+      ? '已保存，留空沿用'
+      : '仅保存在这台设备'
+  if (status.needsToken) by(root, '[data-space-setup]').open = true
+  by(root, '[data-connect]').textContent = status.needsToken
+    ? '更新 Token 并补传'
+    : '验证并连接'
   by(root, '[data-space-summary]').textContent = status.connected
     ? '更新我的资料或 Token'
     : '连接双人云空间'
@@ -128,6 +136,7 @@ export function bindCloudControls(root, sync) {
       if (!token) {
         const current = sync.status()
         if (
+          current.needsToken ||
           !current.connected ||
           value.toLowerCase() !==
             (current.owner + '/' + current.repo).toLowerCase()

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
 import { createGitHubSync } from '../src/github-sync.js'
 
+const fineToken = () => 'github_pat_' + randomBytes(24).toString('hex')
 const entryId = 'entry-1'
 const entryKey = 'entries/' + entryId
 const entryPath = 'shared/' + entryKey + '.json'
@@ -21,7 +22,7 @@ class Repository {
   profile = {
     owner: 'example',
     repo: 'journal',
-    token: randomBytes(24).toString('hex'),
+    token: fineToken(),
   }
   blobs = new Map()
   trees = new Map()
@@ -30,6 +31,8 @@ class Repository {
   private = true
   online = true
   beforePush = null
+  beforeRequest = null
+  requests = []
 
   get files() {
     return this.head
@@ -76,13 +79,16 @@ class Repository {
   fetch = async (url, { method, headers, body, redirect }) => {
     const root = 'https://api.github.com/repos/example/journal'
     assert.ok(url === root || url.startsWith(root + '/'))
-    assert.equal(headers.Authorization, 'Bearer ' + this.profile.token)
     assert.equal(redirect, 'error')
     assert.ok(
       !url.includes(this.profile.token) && !body?.includes(this.profile.token),
     )
-    if (!this.online) throw new TypeError('simulated offline')
     const route = url.slice(root.length).split('?')[0]
+    this.requests.push([method, route])
+    this.beforeRequest?.(method, route)
+    if (!this.online) throw new TypeError('simulated offline')
+    if (headers.Authorization !== 'Bearer ' + this.profile.token)
+      return response(401, { message: 'Bad credentials' })
     const data = body && JSON.parse(body)
     if (route === '')
       return response(200, {
@@ -154,6 +160,7 @@ class Repository {
 class Device {
   entities = new Map()
   privateKeys = []
+  outboxRevision = ''
   storage = new Map()
   constructor(repo, clock) {
     this.repo = repo
@@ -179,7 +186,18 @@ class Device {
           structuredClone({
             entities: [...this.entities.values()],
             privateKeys: this.privateKeys,
+            outboxRevision: this.outboxRevision,
           }),
+        ackOutbox: async (revision) => {
+          if (this.outboxRevision === revision) this.outboxRevision = ''
+        },
+        readCachedAttachment: async (path) => {
+          for (const item of this.entities.values()) {
+            if (item.photoKey === path) return this.photo
+            if (item.audioKey === path) return this.audio
+          }
+          return null
+        },
         readPhoto: async () => this.photo,
         readAudio: async () => this.audio,
         apply: async ({
@@ -189,6 +207,8 @@ class Device {
           expected,
           photoPath,
           audioPath,
+          keepPhoto,
+          keepAudio,
           readPhoto,
           readAudio,
         }) => {
@@ -206,12 +226,12 @@ class Device {
           }
           const entity = { kind, id, data }
           if (photoPath) {
-            this.photo = await readPhoto()
-            entity.photoKey = photoPath
+            if (!keepPhoto) this.photo = await readPhoto()
+            entity.photoKey = keepPhoto ? expected.photoKey : photoPath
           }
           if (audioPath) {
-            this.audio = await readAudio()
-            entity.audioKey = audioPath
+            if (!keepAudio) this.audio = await readAudio()
+            entity.audioKey = keepAudio ? expected.audioKey : audioPath
           }
           this.entities.set(key, entity)
           return true
@@ -384,4 +404,123 @@ test('offline edits survive restart and wait while the repository is public', as
   await first.sync.sync()
   assert.equal(repo.read(entryPath).data.notes, '离线记录')
   assert.equal(first.sync.status().pending, 0)
+})
+
+test('unchanged private HEAD reuses its verified tree across restart; a text edit fetches only its JSON blob', async () => {
+  const { repo, first, second } = await pair({ attachments: true })
+  repo.requests.length = 0
+  second.restart()
+  await second.sync.start()
+  assert.deepEqual(repo.requests, [
+    ['GET', ''],
+    ['GET', '/git/ref/heads/main'],
+  ])
+
+  first.edit({ notes: '新写的一句' })
+  await first.sync.sync()
+  repo.requests.length = 0
+  await second.sync.sync()
+  assert.equal(
+    repo.requests.filter(
+      ([method, route]) => method === 'GET' && route.startsWith('/git/trees/'),
+    ).length,
+    1,
+  )
+  assert.deepEqual(
+    repo.requests.filter(([, route]) => route.startsWith('/git/blobs/')),
+    [['GET', '/git/blobs/' + repo.files.get(entryPath)]],
+  )
+  assert.equal(second.photo, first.photo)
+  assert.equal(second.audio, first.audio)
+
+  const marker = 'shared/.little-days.json'
+  repo.replaceFile(marker, { format: 'foreign', version: 1 })
+  await assert.rejects(second.sync.sync(), /标记无效/)
+})
+
+test('a new shared entry can use an already cached attachment SHA without a second download', async () => {
+  const { repo, first, second } = await pair({ attachments: true })
+  const later = structuredClone(first.entities.get(entryKey))
+  later.id = later.data.id = 'new-visit'
+  const key = 'entries/' + later.id
+  first.entities.set(key, later)
+  await first.sync.sync()
+  const path = 'shared/' + key + '.json'
+  repo.requests.length = 0
+  await second.sync.sync()
+  assert.deepEqual(
+    repo.requests.filter(([, route]) => route.startsWith('/git/blobs/')),
+    [['GET', '/git/blobs/' + repo.files.get(path)]],
+  )
+  assert.equal(second.entities.get(key).photoKey, repo.read(path).photoPath)
+})
+
+test('401 during publication keeps new entries and dirty revision across restart and replays after explicit renewal', async () => {
+  const { repo, first, second } = await pair()
+  const key = 'entries/offline-wish',
+    path = 'shared/' + key + '.json'
+  const entry = structuredClone(first.entities.get(entryKey))
+  entry.id = entry.data.id = 'offline-wish'
+  entry.data.title = '留给下周的主意'
+  first.entities.set(key, entry)
+  first.outboxRevision = 'pending-save'
+  repo.beforeRequest = (method) => {
+    if (method === 'PATCH') {
+      repo.beforeRequest = null
+      repo.profile.token = fineToken()
+    }
+  }
+  await assert.rejects(first.sync.sync(), /更新 Token/)
+  assert.equal(first.sync.status().needsToken, true)
+  assert.equal(first.sync.status().pending, 1)
+  assert.equal(first.outboxRevision, 'pending-save')
+  assert(!repo.files.has(path))
+  first.restart()
+  repo.requests.length = 0
+  await first.sync.start()
+  assert.equal(first.sync.status().needsToken, true)
+  assert.equal(first.sync.status().pending, 1)
+  assert.deepEqual(repo.requests, [])
+  await first.sync.connect(repo.profile)
+  assert.equal(first.sync.status().needsToken, false)
+  assert.equal(first.sync.status().pending, 0)
+  assert.equal(first.outboxRevision, '')
+  assert.equal(repo.read(path).data.title, '留给下周的主意')
+  await second.sync.connect(repo.profile)
+  assert.equal(second.entities.get(key).data.title, '留给下周的主意')
+})
+
+test('unchanged trash metadata stays cached and is revalidated if its blob changes', async () => {
+  const { repo, first, second } = await pair()
+  first.edit({ notes: '我的新备注' })
+  await first.sync.sync()
+  const [previous] = await second.sync.listTrash()
+  repo.requests.length = 0
+  await second.sync.listTrash()
+  assert.ok(!repo.requests.some(([, route]) => route.startsWith('/git/blobs/')))
+  const path = 'shared/trash/' + previous.id + '.json'
+  repo.replaceFile(path, { ...repo.read(path), title: '修订后的旧标题' })
+  const [fresh] = await second.sync.listTrash()
+  assert.equal(fresh.title, '修订后的旧标题')
+})
+
+test('unsupported or legacy credentials never reach GitHub and a bound notebook can renew them', async () => {
+  const repo = new Repository(),
+    device = new Device(repo, Date.now)
+  const old = {
+    ...repo.profile,
+    branch: 'main',
+    token: 'ghp_' + randomBytes(24).toString('hex'),
+  }
+  await assert.rejects(device.sync.connect(old), /Fine-grained PAT/)
+  assert.deepEqual(repo.requests, [])
+  device.storage.set('config', old)
+  device.storage.set('bound', 'example/journal@main')
+  await device.sync.start()
+  assert.equal(device.sync.status().connected, true)
+  assert.equal(device.sync.status().needsToken, true)
+  assert.deepEqual(repo.requests, [])
+  await device.sync.connect(repo.profile)
+  assert.equal(device.sync.status().needsToken, false)
+  assert.ok(repo.requests.length)
 })

@@ -7,6 +7,9 @@ import {
   normalizePlace,
   onExternalChange,
   localPrivacy,
+  isSharedMutation,
+  ackOutbox,
+  readCachedAttachment,
 } from './storage.js'
 import { isLocalMedia, blobDataUrl, dataMediaType } from './media-store.js'
 import { assetPath } from './paths.js'
@@ -130,7 +133,7 @@ export function onCloudLocalChange(callback) {
   }
   globalThis.addEventListener?.('little-days-local-edit', signal)
   const stop = onExternalChange((event) => {
-    if (event !== 'cloud') signal()
+    if (isSharedMutation(event)) signal()
   })
   return () => {
     stop()
@@ -160,7 +163,7 @@ export function createCloudAdapter() {
     const visiblePlaces = new Set(state.places.map((p) => p.id))
     for (const id of state.withdrawn)
       if (!visiblePlaces.has(id)) privateKeys.push({ kind: 'places', id })
-    return { entities, privateKeys }
+    return { entities, privateKeys, outboxRevision: state.outboxRevision }
   }
   async function requireCurrent(expected) {
     const { entities } = await snapshot()
@@ -296,6 +299,8 @@ export function createCloudAdapter() {
   return {
     snapshot,
     apply,
+    ackOutbox,
+    readCachedAttachment,
     readPhoto: (item) => attachment(item, 'image'),
     readAudio: (item) => attachment(item, 'audio'),
   }

@@ -30,7 +30,12 @@ import {
   cloudControls,
   paintSpaceStatus,
 } from './cloud-controls.js'
-import { backupControls, bindBackupControls } from './backup-ui.js'
+import {
+  backupControls,
+  bindBackupControls,
+  refreshPrivateBackupStatus,
+} from './backup-ui.js'
+import { privateBackupStatus } from './backup.js'
 import { icon, flower, flourish, kitchenSketch } from './icons.js'
 import { openCapture, attitudeLabel } from './capture.js'
 import {
@@ -149,10 +154,26 @@ let activeDetail = '',
   toastTimer
 const app = document.querySelector('#app'),
   overlay = document.querySelector('#overlay')
+let lastSyncNotice = ''
 const cloud = createGitHubSync({
   adapter: createCloudAdapter(),
   onStatus(status) {
     paintSpaceStatus(overlay, status)
+    updateSyncNotice(status)
+    const issue = status.needsToken
+      ? 'token'
+      : status.pending && ['error', 'offline'].includes(status.phase)
+        ? status.phase
+        : ''
+    if (issue && issue !== lastSyncNotice) {
+      lastSyncNotice = issue
+      toast(
+        issue === 'token'
+          ? 'GitHub 授权失效，请更新 Token。手记已留在本机。'
+          : '暂时无法同步，改动已留在本机。',
+      )
+    } else if (!status.connected || (status.phase === 'idle' && !issue))
+      lastSyncNotice = ''
     if (status.connected) app.querySelector('.space-invite')?.remove()
   },
 })
@@ -174,6 +195,32 @@ function toast(text) {
   el.classList.add('visible')
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => el.classList.remove('visible'), 2300)
+}
+function updateSyncNotice(status) {
+  const container = app.querySelector('[data-sync-notice]')
+  if (!container) return
+  const needsToken = status.connected && status.needsToken
+  const failed =
+    status.connected &&
+    status.pending > 0 &&
+    ['error', 'offline'].includes(status.phase)
+  container.hidden = !needsToken && !failed
+  if (container.hidden) return
+  const message = needsToken
+    ? 'GitHub 授权已失效。更新 Token 后，会自动补传本机的共享改动。'
+    : status.phase === 'offline'
+      ? '共享改动已存进本机队列，联网后会自动补传。'
+      : '共享改动已存进本机队列。可到设置查看同步情况。'
+  const actionButton = container.querySelector('button')
+  container.querySelector('span').textContent = message
+  actionButton.dataset.action = needsToken ? 'renew-space' : 'settings'
+  actionButton.textContent = needsToken ? '更新 Token' : '查看同步'
+}
+
+function updateBackupReminder() {
+  const reminder = app.querySelector('[data-private-backup-reminder]')
+  if (reminder) reminder.hidden = !privateBackupStatus(entries, plans).due
+  refreshPrivateBackupStatus(overlay, entries, plans)
 }
 function listSuggestions() {
   const ranked = recommendEntries(pool(), { limit: 12, meal })
@@ -888,6 +935,10 @@ function render() {
     icon('settings', 20) +
     '</button></div><div class="page">' +
     heading() +
+    '<aside class="local-status" data-sync-notice hidden role="status"><span></span><button type="button"></button></aside>' +
+    (section === 'home'
+      ? `<aside class="local-status backup-nudge" data-private-backup-reminder hidden><span>私人内容已有两周未备份。</span><button type="button" ${action('private-backup')}>备份到文件</button></aside>`
+      : '') +
     (section === 'home' &&
     !cloud.status().connected &&
     !getPreference('spaceInviteDismissed', false)
@@ -915,6 +966,8 @@ function render() {
     '</div></main><nav class="bottom-nav" aria-label="手机导航">' +
     navMarkup(true) +
     '</nav>'
+  updateSyncNotice(cloud.status())
+  updateBackupReminder()
   if (archiveOpen) app.querySelector('.ft-archive').open = true
 }
 function moveTo(route) {
@@ -1154,9 +1207,9 @@ function settings() {
     '我的小天地',
   )
   bindCloudControls(overlay, cloud)
-  bindBackupControls(overlay, refreshNotebook)
+  bindBackupControls(overlay, refreshNotebook, { entries, plans })
   if (cloud.status().boundSpace)
-    overlay.querySelector('.backup-confirm p').textContent =
+    overlay.querySelector('[data-backup-confirm-note]').textContent =
       '恢复会替换本机手记与清单。下次同步也会把其中的共享更改和删除发给另一人。建议先导出当前备份。'
 }
 async function refreshNotebook() {
@@ -1180,7 +1233,13 @@ async function refreshNotebook() {
 }
 async function saveFromCapture(record, original = null) {
   const saved = await putRecord({ ...record, isSample: false }, original)
-  placeProfiles = await readPlaceProfiles()
+  if (saved.diningSource === 'out' || original?.diningSource === 'out') {
+    try {
+      placeProfiles = await readPlaceProfiles()
+    } catch {
+      storageError = '手记已保存，店铺列表暂时无法刷新。'
+    }
+  }
   entries = [saved, ...entries.filter((e) => e.id !== saved.id)].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   )
@@ -1416,6 +1475,17 @@ async function handleAction(key, value) {
     render()
     return
   }
+  if (key === 'private-backup') {
+    settings()
+    overlay.querySelector('[data-private-backup-export]')?.focus()
+    return
+  }
+  if (key === 'renew-space') {
+    settings()
+    overlay.querySelector('[data-space-setup]').open = true
+    overlay.querySelector('[data-space-token]').focus()
+    return
+  }
   if (key === 'connect-space') {
     settings()
     overlay.querySelector('[data-space-setup]').open = true
@@ -1526,6 +1596,13 @@ async function init() {
     if (document.visibilityState === 'visible' && cloud.status().connected)
       cloud.sync().catch(() => {})
   }
+  window.addEventListener('little-days-private-backup', updateBackupReminder)
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'little.days.privateBackupAt') updateBackupReminder()
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') updateBackupReminder()
+  })
   window.addEventListener('online', resume)
   document.addEventListener('visibilitychange', resume)
   setInterval(resume, 60000)

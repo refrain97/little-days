@@ -1,8 +1,12 @@
-import { createSyncState } from './sync-state.js'
+import { createSyncState, isFineGrainedToken } from './sync-state.js'
 
 const DAY = 86400000
 const retain = 30 * DAY
 const marker = 'shared/.little-days.json'
+const renewTokenText =
+  'GitHub Token 已过期或失效。本机记录已保留，更新 Token 并验证后会自动补传。'
+const fineTokenText =
+  '请使用以 github_pat_ 开头、仅授权该私库的 Fine-grained PAT。更新后会自动同步本机更改。'
 const signature = { format: 'little-days-shared', version: 1 }
 const groups = ['entries', 'places', 'freetime']
 const groupSet = new Set(groups)
@@ -127,7 +131,7 @@ function decodeJSON(base64) {
   for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i)
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
 }
-function configOf(value) {
+function configOf(value, { saved = false } = {}) {
   const owner = safely(value?.owner),
     repo = safely(value?.repo),
     token = safely(value?.token),
@@ -135,10 +139,10 @@ function configOf(value) {
   if (
     !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) ||
     !/^[A-Za-z0-9_.-]+$/.test(repo) ||
-    /^\.+$/.test(repo) ||
-    !token
+    /^\.+$/.test(repo)
   )
-    throw new Error('请填写 GitHub 用户名、仓库名和个人访问令牌。')
+    throw new Error('请填写正确的 GitHub 数据仓库名称。')
+  if (!saved && !isFineGrainedToken(token)) throw new Error(fineTokenText)
   if (
     branch &&
     (branch.includes('..') ||
@@ -165,7 +169,7 @@ class GitError extends Error {
   constructor(status, response) {
     super(
       status === 401
-        ? 'GitHub 令牌无效或已过期。'
+        ? renewTokenText
         : status === 403 || status === 429
           ? 'GitHub 拒绝了请求，请检查仓库授权或稍后重试。'
           : status === 404
@@ -190,6 +194,7 @@ function client(config, fetcher) {
     '/' +
     encodeURIComponent(config.repo)
   return async (path = '', method = 'GET', body) => {
+    if (!isFineGrainedToken(config.token)) throw new Error(fineTokenText)
     const res = await fetcher(base + path, {
       method,
       redirect: 'error',
@@ -270,8 +275,12 @@ async function verify(api, config) {
 }
 const refPath = (branch) =>
   '/git/ref/heads/' + branch.split('/').map(encodeURIComponent).join('/')
-async function inspect(api, config, init = false) {
-  await verify(api, config)
+async function inspect(
+  api,
+  config,
+  { init = false, inventory, verified = false } = {},
+) {
+  if (!verified) await verify(api, config)
   let ref
   try {
     ref = await api(refPath(config.branch))
@@ -291,6 +300,10 @@ async function inspect(api, config, init = false) {
     ref = await api(refPath(config.branch))
   }
   const head = ref.object.sha
+  // A commit and all of its Git objects are immutable. Always recheck repository
+  // privacy and branch HEAD, but reuse a previously validated tree when it matches.
+  if (inventory?.head === head)
+    return { head, tree: inventory.tree, files: new Map(inventory.files) }
   const commit = await api('/git/commits/' + head)
   const tree = await api('/git/trees/' + commit.tree.sha + '?recursive=1')
   if (tree.truncated || !Array.isArray(tree.tree) || !validLayout(tree.tree))
@@ -310,12 +323,17 @@ async function inspect(api, config, init = false) {
     } catch (e) {
       if (e.status !== 409 && e.status !== 422) throw e
     }
-    return inspect(api, config, false)
+    return inspect(api, config, { inventory })
   }
-  const sig = await jsonBlob(api, files.get(marker))
-  if (!equal(sig, signature))
-    throw new Error('共享仓库标记无效，请检查连接的仓库。')
+  if (inventory?.markerSha !== files.get(marker)) {
+    const sig = await jsonBlob(api, files.get(marker))
+    if (!equal(sig, signature))
+      throw new Error('共享仓库标记无效，请检查连接的仓库。')
+  }
   return { head, tree: commit.tree.sha, files }
+}
+function inventoryOf({ head, tree, files }) {
+  return { head, tree, files: [...files], markerSha: files.get(marker) }
 }
 async function putBlob(api, base64) {
   const response = await api('/git/blobs', 'POST', {
@@ -337,7 +355,7 @@ async function atomicWrite(
   const items = [...changes].filter(
     ([path, sha]) => (remote.files.get(path) || null) !== sha,
   )
-  if (!items.length) return remote.head
+  if (!items.length) return remote
   const tree = await api('/git/trees', 'POST', {
     base_tree: remote.tree,
     tree: items.map(([path, sha]) => ({
@@ -358,7 +376,34 @@ async function atomicWrite(
     'PATCH',
     { sha: commit.sha, force: false },
   )
-  return commit.sha
+  const files = new Map(remote.files)
+  for (const [path, sha] of items) {
+    if (sha) files.set(path, sha)
+    else files.delete(path)
+  }
+  return { head: commit.sha, tree: tree.sha, files }
+}
+function trashSummary(path, sha, doc) {
+  const id = path.slice('shared/trash/'.length, -5)
+  const date = Number(path.match(trashPath)?.[1])
+  if (
+    doc.id !== id ||
+    !groupSet.has(doc.kind) ||
+    typeof doc.entityId !== 'string'
+  )
+    throw new Error('回收站记录无效。')
+  return {
+    id,
+    sha,
+    kind: doc.kind,
+    entityId: doc.entityId,
+    title: String(doc.title || '未命名'),
+    reason: doc.reason,
+    archivedAt: new Date(date).toISOString(),
+    expiresAt: new Date(date + retain).toISOString(),
+    photoPath: doc.record?.photoPath || '',
+    audioPath: doc.record?.audioPath || '',
+  }
 }
 function fileDocument(kind, id, wire) {
   return { version: 1, kind, id, ...wire }
@@ -428,12 +473,25 @@ function freshState() {
     restores: [],
   }
 }
-function calculatePending(snap, base) {
+function calculatePending(snap, base, publishedKeys = []) {
   const pending = []
-  for (const key of new Set([...snap.entities.keys(), ...Object.keys(base)])) {
+  // A previously deleted shared item can still have versions in the 30-day trash.
+  // A privacy withdrawal for it remains work even when there is no live base file.
+  const withdrawn = new Set(
+    [...publishedKeys].filter((key) => snap.privates.has(key)),
+  )
+  for (const key of new Set([
+    ...snap.entities.keys(),
+    ...Object.keys(base),
+    ...withdrawn,
+  ])) {
     const local = snap.entities.get(key),
       previous = base[key]
-    if (localDigest(local) === (previous?.localDigest || '')) continue
+    if (
+      !withdrawn.has(key) &&
+      localDigest(local) === (previous?.localDigest || '')
+    )
+      continue
     pending.push({
       key,
       operation: local
@@ -465,7 +523,7 @@ async function processCommit({
   prune,
   restoring,
 }) {
-  const remote = await inspect(api, config)
+  const remote = await inspect(api, config, { inventory: state.inventory })
   const { files } = remote
   const changes = new Map(),
     documents = new Map(),
@@ -487,14 +545,24 @@ async function processCommit({
       documents.set(path, await jsonBlob(api, files.get(path)))
     return documents.get(path)
   }
+  const trashCache = new Map(
+    (state.trash || []).map((meta) => [
+      'shared/trash/' + meta.id + '.json',
+      meta,
+    ]),
+  )
+  async function trashInfo(path) {
+    const sha = files.get(path)
+    if (trashCache.get(path)?.sha !== sha)
+      trashCache.set(path, trashSummary(path, sha, await readJSON(path)))
+    return trashCache.get(path)
+  }
   let historyKeys
   async function historyIndex() {
     if (historyKeys) return historyKeys
     historyKeys = new Map()
     for (const path of trashFiles) {
-      const d = await readJSON(path)
-      if (!groupSet.has(d.kind) || typeof d.entityId !== 'string')
-        throw new Error('回收站记录无效。')
+      const d = await trashInfo(path)
       historyKeys.set(path, {
         key: keyFor(d.kind, d.entityId),
         reason: d.reason,
@@ -734,13 +802,13 @@ async function processCommit({
     for (const key of remoteKeys) if (!next.has(key)) mark(await getWire(key))
     for (const row of next.values()) mark(row.target)
     for (const path of trashFiles)
-      if (changes.get(path) !== null) mark((await readJSON(path)).record)
+      if (changes.get(path) !== null) mark(await trashInfo(path))
     for (const { doc } of archives) mark(doc.record)
     for (const p of files.keys())
       if ((windows.photo.test(p) || windows.audio.test(p)) && !used.has(p))
         changes.set(p, null)
   }
-  await atomicWrite(
+  const committed = await atomicWrite(
     api,
     config,
     remote,
@@ -755,9 +823,16 @@ async function processCommit({
     return async () => {
       if (!path) return null
       const sha = changes.get(path) || files.get(path)
-      if (!sha) throw new Error('共享附件未找到。')
+      if (!sha || !path.includes('/' + sha + '.'))
+        throw new Error('共享附件未找到或版本不符。')
+      const cached = await adapter.readCachedAttachment?.(path, type)
+      if (cached) return cached
       const result = await api('/git/blobs/' + sha)
-      if (result.encoding !== 'base64' || typeof result.content !== 'string')
+      if (
+        result.sha !== sha ||
+        result.encoding !== 'base64' ||
+        typeof result.content !== 'string'
+      )
         throw new Error('共享附件无法读取。')
       return 'data:' + type + ';base64,' + result.content.replace(/\s+/g, '')
     }
@@ -815,23 +890,19 @@ async function processCommit({
     base.audioKey = item.audioKey || ''
     base.localDigest = localDigest({ ...item, data: row.target.data })
   }
-  const trashCache = (state.trash || []).filter(
-    (t) =>
-      files.has('shared/trash/' + t.id + '.json') &&
-      changes.get('shared/trash/' + t.id + '.json') !== null,
-  )
-  for (const { doc } of archives) {
-    const { record, ...meta } = doc
-    trashCache.push(meta)
-  }
+  for (const [path, meta] of trashCache)
+    if (committed.files.get(path) !== meta.sha) trashCache.delete(path)
+  for (const { path, doc } of archives)
+    trashCache.set(path, trashSummary(path, committed.files.get(path), doc))
   for (const k of Object.keys(updated)) published.add(k)
   for (const k of withdrawn) published.delete(k)
   return {
     ...state,
     base: updated,
+    inventory: inventoryOf(committed),
     published: [...published],
-    pending: calculatePending(finalSnap, updated),
-    trash: trashCache,
+    pending: calculatePending(finalSnap, updated, published),
+    trash: [...trashCache.values()],
     lastSync: new Date(now).toISOString(),
   }
 }
@@ -851,6 +922,7 @@ export function createGitHubSync({
     lastSync = '',
     pending = 0,
     error = '',
+    needsToken = false,
     timer = null,
     retry = null,
     attempt = 0,
@@ -873,6 +945,7 @@ export function createGitHubSync({
     pending,
     lastSync,
     error,
+    needsToken,
   })
   const publish = () => {
     onStatus?.(status())
@@ -925,10 +998,11 @@ export function createGitHubSync({
   const offline = () => globalThis.navigator?.onLine === false
   function indicateFailure(e) {
     const isNetwork =
-      offline() ||
-      e instanceof TypeError ||
-      e.name === 'AbortError' ||
-      e.name === 'TimeoutError'
+      e.status !== 401 &&
+      (offline() ||
+        e instanceof TypeError ||
+        e.name === 'AbortError' ||
+        e.name === 'TimeoutError')
     phase = isNetwork ? 'offline' : 'error'
     error = isNetwork
       ? '暂时无法连接 GitHub，本机更改已保留。'
@@ -950,11 +1024,22 @@ export function createGitHubSync({
     }
     publish()
   }
+  async function reportFailure(c, state, e) {
+    if (config !== c) return
+    if (e.status === 401) {
+      needsToken = true
+      state.needsToken = true
+      await saveState(c, state)
+      clearTimeout(retry)
+    }
+    indicateFailure(e)
+  }
   async function run(options = {}) {
     if (!config) return status()
     const latest = await storage.get('config')
     if (!latest) {
       config = null
+      needsToken = false
       phase = 'idle'
       lastSync = ''
       pending = 0
@@ -963,18 +1048,27 @@ export function createGitHubSync({
       publish()
       return status()
     }
-    config = configOf(latest)
+    config = configOf(latest, { saved: true })
     const c = config
     let state = await readState(c)
+    const original = await adapter.snapshot()
     state.pending = calculatePending(
-      parseSnapshot(await adapter.snapshot()),
+      parseSnapshot(original),
       state.base,
+      state.published,
     )
     if (options.restore && !state.restores.includes(options.restore))
       state.restores.push(options.restore)
     pending = state.pending.length + state.restores.length
     lastSync = state.lastSync
     await saveState(c, state)
+    needsToken = Boolean(state.needsToken) || !isFineGrainedToken(c.token)
+    if (needsToken) {
+      phase = 'error'
+      error = isFineGrainedToken(c.token) ? renewTokenText : fineTokenText
+      publish()
+      throw new Error(error)
+    }
     phase = 'syncing'
     error = ''
     publish()
@@ -1021,10 +1115,12 @@ export function createGitHubSync({
       lastSync = state.lastSync
       pending = state.pending.length
       publish()
+      if (!pending && original.outboxRevision)
+        await adapter.ackOutbox?.(original.outboxRevision)
       if (pending) schedule(1500)
       return status()
     } catch (e) {
-      if (config === c) indicateFailure(e)
+      await reportFailure(c, state, e)
       throw new Error(error || '同步未完成。')
     }
   }
@@ -1056,11 +1152,20 @@ export function createGitHubSync({
           throw new Error(
             '此设备已绑定 ' + bound + '，不能将原有手记传入另一个分支。',
           )
-        await inspect(api, c, true)
+        const state = await readState(c)
+        const remote = await inspect(api, c, {
+          init: true,
+          inventory: state.inventory,
+          verified: true,
+        })
         // A pre-initialized empty space still needs a real write-permission check.
         // The marker already has these bytes, so this does not create a commit or user record.
         await putBlob(api, encodeJSON(signature))
         await storage.configure(c, binding)
+        state.needsToken = false
+        state.inventory = inventoryOf(remote)
+        await saveState(c, state)
+        needsToken = false
         onVerified?.()
         epoch++
         clearTimers()
@@ -1078,10 +1183,15 @@ export function createGitHubSync({
     boundSpace = (await storage.get('bound')) || ''
     const c = await storage.get('config')
     if (c) {
-      config = configOf(c)
+      config = configOf(c, { saved: true })
       const saved = await readState(config)
       pending = saved.pending.length + saved.restores.length
       lastSync = saved.lastSync
+      needsToken = Boolean(saved.needsToken) || !isFineGrainedToken(c.token)
+      if (needsToken) {
+        phase = 'error'
+        error = isFineGrainedToken(c.token) ? renewTokenText : fineTokenText
+      }
     }
     publish()
     if (config)
@@ -1097,6 +1207,7 @@ export function createGitHubSync({
       lock(async () => {
         await storage.remove('config')
         config = null
+        needsToken = false
         phase = 'idle'
         lastSync = ''
         error = ''
@@ -1116,38 +1227,35 @@ export function createGitHubSync({
           return state.trash
             .filter((t) => Date.parse(t.expiresAt) > now)
             .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt))
-        const api = setupAPI(config),
-          remote = await inspect(api, config)
-        const previous = new Map(state.trash.map((t) => [t.id, t])),
-          results = []
-        for (const [path, sha] of remote.files) {
-          const m = path.match(trashPath)
-          if (!m || !withinRetention(path, now)) continue
-          const id = path.slice('shared/trash/'.length, -5)
-          let meta = previous.get(id)
-          if (!meta) {
-            const d = await jsonBlob(api, sha)
-            if (
-              d.id !== id ||
-              !groupSet.has(d.kind) ||
-              typeof d.entityId !== 'string'
-            )
-              throw new Error('回收站记录无效。')
-            meta = {
-              id,
-              kind: d.kind,
-              entityId: d.entityId,
-              title: String(d.title || '未命名'),
-              reason: d.reason,
-              archivedAt: new Date(+m[1]).toISOString(),
-              expiresAt: new Date(+m[1] + retain).toISOString(),
-            }
+        if (!isFineGrainedToken(config.token)) throw new Error(fineTokenText)
+        if (state.needsToken) throw new Error(renewTokenText)
+        const c = config
+        try {
+          const api = setupAPI(c),
+            remote = await inspect(api, c, { inventory: state.inventory })
+          const previous = new Map(state.trash.map((t) => [t.id, t])),
+            results = []
+          for (const [path, sha] of remote.files) {
+            const m = path.match(trashPath)
+            if (!m || !withinRetention(path, now)) continue
+            const id = path.slice('shared/trash/'.length, -5)
+            const old = previous.get(id)
+            const meta =
+              old?.sha === sha
+                ? old
+                : trashSummary(path, sha, await jsonBlob(api, sha))
+            results.push(meta)
           }
-          results.push(meta)
+          state.inventory = inventoryOf(remote)
+          state.trash = results
+          await saveState(config, state)
+          return results.sort((a, b) =>
+            b.archivedAt.localeCompare(a.archivedAt),
+          )
+        } catch (e) {
+          await reportFailure(c, state, e)
+          throw e
         }
-        state.trash = results
-        await saveState(config, state)
-        return results.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt))
       }),
     )
   }

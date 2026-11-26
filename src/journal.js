@@ -1,6 +1,5 @@
 export const CATEGORIES = ['美食', '饮品', '灵感', '回忆']
 
-const STORAGE_KEY = 'xiaorizi.journal.v1'
 const tastes = ['', '好吃', '一般', '不合口味']
 
 const dishNames = [
@@ -534,7 +533,9 @@ export function authorship(value) {
 
 export function createEntry(fields = {}) {
   const text = String(fields.text || '').trim()
-  const extracted = extractEntry(text)
+  // Fully normalized IndexedDB rows already have these fields. Parse only legacy or new input.
+  let inferred
+  const extracted = () => (inferred ??= extractEntry(text))
   const date = fields.createdAt ? new Date(fields.createdAt) : new Date()
   const rawRating = Math.round(Number(fields.rating))
   const rating = Number.isFinite(rawRating)
@@ -542,7 +543,7 @@ export function createEntry(fields = {}) {
     : 0
   const category = CATEGORIES.includes(fields.category)
     ? fields.category
-    : extracted.category
+    : extracted().category
   const sample =
     fields.isSample ?? String(fields.id || '').startsWith('sample-')
   const source = ['text', 'photo', 'voice'].includes(fields.source)
@@ -559,7 +560,7 @@ export function createEntry(fields = {}) {
     !Object.hasOwn(fields, 'photoDescription')
   const enteredTaste = tastes.includes(fields.taste)
     ? fields.taste
-    : extracted.taste
+    : extracted().taste
   // Low/neutral ratings must never produce a positive recommendation. Keep an
   // explicit legacy dislike even when it conflicts with a high rating.
   const taste =
@@ -577,7 +578,7 @@ export function createEntry(fields = {}) {
     ...((fields.originalTextUnverified ?? legacyPhoto)
       ? { originalTextUnverified: true }
       : {}),
-    title: String(fields.title || extracted.title).trim() || '随手一记',
+    title: String(fields.title || extracted().title).trim() || '随手一记',
     category,
     ...diningFields(fields, category),
     createdAt: (Number.isNaN(date.getTime()) ? new Date() : date).toISOString(),
@@ -590,11 +591,11 @@ export function createEntry(fields = {}) {
     audio: String(fields.audio || ''),
     ingredients: Array.isArray(fields.ingredients)
       ? fields.ingredients.map(String)
-      : extracted.ingredients,
+      : extracted().ingredients,
     steps: Array.isArray(fields.steps)
       ? fields.steps.map(String)
-      : extracted.steps,
-    feeling: String(fields.feeling ?? extracted.feeling),
+      : extracted().steps,
+    feeling: String(fields.feeling ?? extracted().feeling),
     source,
   }
 }
@@ -754,53 +755,6 @@ export function upgradeDiningRecords(records, addVenueExamples = true) {
 
 const chronological = (a, b) =>
   String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
-
-export function loadEntries() {
-  let raw
-  try {
-    raw = globalThis.localStorage?.getItem(STORAGE_KEY)
-  } catch {
-    return SEED_ENTRIES.map(createEntry)
-  }
-  if (!raw) {
-    const entries = SEED_ENTRIES.map(createEntry)
-    // Keep example dates anchored to the first visit.
-    try {
-      saveEntries(entries)
-      globalThis.localStorage.setItem('xiaorizi.dining-examples.v1', '1')
-    } catch {
-      /* Private browsing can disable local storage. */
-    }
-    return entries
-  }
-  const saved = JSON.parse(raw)
-  if (!Array.isArray(saved)) throw new Error('手记数据格式异常，暂时无法读取。')
-  const previousMigration = globalThis.localStorage.getItem(
-    'xiaorizi.dining-examples.v1',
-  )
-  const upgraded = upgradeDiningRecords(saved, !previousMigration)
-  if (upgraded !== saved || !previousMigration) {
-    try {
-      if (upgraded !== saved) saveEntries(upgraded)
-      if (!previousMigration)
-        globalThis.localStorage.setItem('xiaorizi.dining-examples.v1', '1')
-    } catch {
-      /* Existing records remain readable when storage is full. */
-    }
-  }
-  return upgraded.map(createEntry).sort(chronological)
-}
-
-export function saveEntries(entries) {
-  if (!Array.isArray(entries)) throw new TypeError('需要传入手记数组。')
-  try {
-    globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
-  } catch (error) {
-    if (error?.name === 'QuotaExceededError')
-      throw new Error('本机存储空间不足，请缩短录音或换一张小图再保存。')
-    throw new Error('浏览器无法保存手记，请检查站点的存储权限。')
-  }
-}
 
 export function recommendEntries(
   entries,

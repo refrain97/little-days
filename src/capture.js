@@ -4,7 +4,8 @@ import {
   readPhotoTextLocally,
   requestDeviceAI,
 } from './device-ai.js'
-import { blobDataUrl } from './media-store.js'
+import { blobDataUrl, dataMediaBinary } from './media-store.js'
+import { recordingType, startAudioRecorder } from './audio-recorder.js'
 import { assetPath } from './paths.js'
 import {
   CATEGORIES,
@@ -168,6 +169,7 @@ export function openCapture({
   let startedWithAttitude = false
   let visibility =
     privateOnly || record?.visibility === 'private' ? 'private' : 'shared'
+  const previews = new Map()
   let photo = record?.image || ''
   let audio = record?.audio || ''
   let photoText = record?.photoDescription || ''
@@ -504,19 +506,31 @@ export function openCapture({
     updateTextLabel()
     if (value !== 'voice' && listening) void stopRecording()
   }
-  function refreshMedia() {
-    $('.lc-picture').hidden = !photo
-    const img = $('.lc-picture img')
-    if (photo) img.src = assetPath(photo)
-    else img.removeAttribute('src')
-    $('.lc-player').hidden = !audio
-    const player = $('.lc-player audio')
-    if (audio) player.src = assetPath(audio)
-    else {
-      player.pause()
-      player.removeAttribute('src')
-      player.load()
+  function displayMedia(element, value, kind) {
+    const previous = previews.get(element)
+    if (previous?.value === value) return
+    if (previous?.url) URL.revokeObjectURL(previous.url)
+    previews.delete(element)
+    if (value && value.startsWith('data:')) {
+      const { bytes, type } = dataMediaBinary(value, kind)
+      const url = URL.createObjectURL(new Blob([bytes], { type }))
+      element.src = url
+      previews.set(element, { value, url })
+    } else if (kind === 'image' && /^\/images\/[\w.-]+$/u.test(value)) {
+      element.src = assetPath(value)
+      previews.set(element, { value })
+    } else {
+      element.removeAttribute('src')
+      if (kind === 'audio') element.load()
     }
+  }
+  function refreshMedia() {
+    const img = $('.lc-picture img'),
+      player = $('.lc-player audio')
+    displayMedia(img, photo, 'image')
+    displayMedia(player, audio, 'audio')
+    $('.lc-picture').hidden = !img.hasAttribute('src')
+    $('.lc-player').hidden = !player.hasAttribute('src')
   }
   async function addPhoto(file) {
     if (!file) return
@@ -828,53 +842,55 @@ export function openCapture({
         const freshStream = await navigator.mediaDevices.getUserMedia({
           audio: true,
         })
-        if (disposed || source !== 'voice') {
+        if (disposed || saving || source !== 'voice') {
           freshStream.getTracks().forEach((track) => track.stop())
           return
         }
         stream = freshStream
-        const types = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']
-        const type = types.find((t) => MediaRecorder.isTypeSupported?.(t))
-        recorder = new MediaRecorder(stream, {
-          ...(type ? { mimeType: type } : {}),
-          audioBitsPerSecond: 24000,
-        })
-        const current = recorder
-        const chunks = []
-        current.ondataavailable = (e) => {
-          if (e.data.size) chunks.push(e.data)
-        }
-        let resolveAudio
-        audioReady = new Promise((resolve) => {
-          resolveAudio = resolve
-        })
-        current.onerror = () => {
-          if (!disposed)
-            showStatus('[data-voice-status]', '录音中断，请检查麦克风后重试。')
-        }
-        current.onstop = async () => {
-          releaseMic()
-          try {
-            if (disposed || !chunks.length) return
-            const uri = await blobDataUrl(
-              new Blob(chunks, { type: current.mimeType || chunks[0].type }),
-            )
-            if (!disposed) {
-              audio = uri
-              refreshMedia()
-            }
-          } catch {
+        recorder = startAudioRecorder(stream, (current, mimeType) => {
+          const chunks = []
+          current.ondataavailable = (e) => {
+            if (e.data.size) chunks.push(e.data)
+          }
+          let resolveAudio
+          audioReady = new Promise((resolve) => {
+            resolveAudio = resolve
+          })
+          current.onerror = () => {
             if (!disposed)
               showStatus(
                 '[data-voice-status]',
-                '录音读取失败，可以保留文字或重新录制。',
+                '录音中断，请检查麦克风后重试。',
               )
-          } finally {
-            if (recorder === current) recorder = null
-            resolveAudio()
           }
-        }
-        current.start(500)
+          current.onstop = async () => {
+            releaseMic()
+            try {
+              if (disposed || !chunks.length) return
+              const captured = new Blob(chunks, { type: chunks[0].type })
+              const type = await recordingType(
+                captured,
+                current.mimeType || mimeType,
+              )
+              const uri = await blobDataUrl(
+                captured.slice(0, captured.size, type),
+              )
+              if (!disposed) {
+                audio = uri
+                refreshMedia()
+              }
+            } catch {
+              if (!disposed)
+                showStatus(
+                  '[data-voice-status]',
+                  '录音读取失败，可以保留文字或重新录制。',
+                )
+            } finally {
+              if (recorder === current) recorder = null
+              resolveAudio()
+            }
+          }
+        })
       }
       launchSpeech()
       listening = true
@@ -894,6 +910,7 @@ export function openCapture({
       }, 500)
     } catch (error) {
       if (recorder?.state === 'recording') recorder.stop()
+      if (!recorder) audioReady = null
       releaseMic()
       if (!disposed)
         showStatus(
@@ -953,7 +970,8 @@ export function openCapture({
       return
     }
     try {
-      const uri = await blobDataUrl(file)
+      const type = await recordingType(file, '', file.name)
+      const uri = await blobDataUrl(file.slice(0, file.size, type))
       if (disposed) return
       audio = uri
       refreshMedia()
@@ -992,6 +1010,9 @@ export function openCapture({
     if (recorder?.state === 'recording') recorder.stop()
     releaseMic()
     $('.lc-player audio').pause()
+    for (const preview of previews.values())
+      if (preview.url) URL.revokeObjectURL(preview.url)
+    previews.clear()
     dialog.remove()
     document.body.classList.remove('lc-open')
     activeDialog = null
@@ -1015,10 +1036,6 @@ export function openCapture({
   $('.lc-form').onsubmit = async (event) => {
     event.preventDefault()
     if (saving) return
-    if (starting) {
-      showStatus('.lc-error', '正在打开麦克风，请稍候。')
-      return
-    }
     saving = true
     cancelAI()
     $('.lc-submit').disabled = true

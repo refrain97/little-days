@@ -18,6 +18,9 @@
 !/tests/
 /tests/*
 !/tests/sync.test.mjs
+!/tests/recorder.test.mjs
+!/tests/private-backup.test.mjs
+!/tests/storage-safety.test.mjs
 !/src/
 /src/*
 !/src/*.js

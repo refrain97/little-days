@@ -1,5 +1,9 @@
 // Kept outside the journal database and its portable backups. The GitHub credential
 // never enters a journal entry, export, URL, repository file, or UI status message.
+export function isFineGrainedToken(value) {
+  return typeof value === 'string' && /^github_pat_[A-Za-z0-9_]+$/.test(value)
+}
+
 export function createSyncState() {
   const tokenKey = 'xiaorizi.github.token'
   let opened
@@ -77,10 +81,19 @@ export function createSyncState() {
     async get(key) {
       const value = await access('readonly', (store) => store.get(key))
       if (key !== 'config' || !value) return value
-      const token = localStorage.getItem(tokenKey)
-      return token
-        ? { owner: value.owner, repo: value.repo, branch: value.branch, token }
-        : null
+      let token = localStorage.getItem(tokenKey) || ''
+      if (token && !isFineGrainedToken(token)) {
+        // Older versions accepted other credential types. Discard that
+        // credential but keep the repository binding and unsent changes.
+        localStorage.removeItem(tokenKey)
+        token = ''
+      }
+      return {
+        owner: value.owner,
+        repo: value.repo,
+        branch: value.branch,
+        token,
+      }
     },
     set: (key, value) => access('readwrite', (store) => store.put(value, key)),
     async remove(key) {
@@ -88,6 +101,8 @@ export function createSyncState() {
       await access('readwrite', (store) => store.delete(key))
     },
     async configure({ owner, repo, branch, token }, bound) {
+      if (!isFineGrainedToken(token))
+        throw new Error('请使用数据仓库的 Fine-grained PAT。')
       const before = localStorage.getItem(tokenKey)
       let problem,
         wroteToken = false

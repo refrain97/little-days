@@ -2201,31 +2201,159 @@ h1 {
   }
 }
 
-.space-invite, .cloud-actions, .cloud-profile-fields, .trash-item {display:flex; align-items:center; gap:.6rem}
-.space-invite {width:fit-content; max-width:100%; margin:0 0 1rem; border:1px solid #d8cdb6; border-radius:1rem; background:#f5f0e2; padding:0 .25rem}
-.space-invite button,.vn-profile-link {display:inline-flex; align-items:center; gap:.42rem; min-height:36px; color:#685741; background:transparent; border:0}
-.space-invite button {padding:.25rem .55rem;font-size:.82rem}
-.cloud-tools {border-top:1px solid #ded3bf; margin-top:1.1rem; padding-top:1rem; color:#534638}
-.cloud-tools h3,.cloud-tools summary {font-weight:650; font-size:1rem; margin:.15rem 0 .55rem}
-.cloud-tools p {font-size:.84rem;line-height:1.6;overflow-wrap:anywhere}
-.cloud-tools p:empty {display:none}
-.cloud-tools details {margin-top:.7rem}
-.cloud-tools summary {cursor:pointer}
-.ai-tools small {color:#807361; font-weight:400}
-.cloud-field {display:flex;flex-direction:column;gap:.3rem;margin:.7rem 0;font-size:.86rem;min-width:0}
-.cloud-field input {padding:.62rem .7rem;width:100%;box-sizing:border-box;color:inherit;border:1px solid #cebea5;border-radius:9px;background:#fffcf5;font:inherit;font-size:16px}
-.cloud-profile-fields {align-items:flex-start}
-.cloud-profile-fields > :first-child {flex:2}
-.cloud-profile-fields > :last-child {flex:1}
-.cloud-actions {flex-wrap:wrap}
-.cloud-tools button {border:1px solid #d6c7ad; background:#fbf6ea; border-radius:9px; padding:.55rem .8rem; color:#534638; font-size:.85rem}
-.cloud-tools .solid {background:#77533b;color:#fff8ef}
-.cloud-tools button:disabled {opacity:.55}
-.cloud-actions[hidden],.cloud-tools [hidden] {display:none}
-.trash-item {justify-content:space-between;border-bottom:1px dashed #d8cbb6;padding:.45rem 0}
-.trash-item span {display:grid;min-width:0;overflow-wrap:anywhere}
-.trash-item small {font-size:.72rem;color:#766755}
-.author-mark {display:inline-grid;place-items:center;min-width:1.28rem;height:1.28rem;padding:0 .15rem;border-radius:50%;background:#fff5de;color:#68543d;border:1px solid #bbab92;font-size:.68rem;line-height:1;font-weight:600;vertical-align:middle;flex:none}
-.card-cover>.author-mark,.vn-cover>.author-mark {position:absolute;bottom:.5rem;right:.5rem}
-.vn-profile-link {font-size:.83rem;text-decoration:underline;text-underline-offset:.22rem}
-.venue-alias {color:#776953;font-size:.85rem}
+.space-invite,
+.cloud-actions,
+.cloud-profile-fields,
+.trash-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.space-invite {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 1rem;
+  border: 1px solid #d8cdb6;
+  border-radius: 1rem;
+  background: #f5f0e2;
+  padding: 0 0.25rem;
+}
+.space-invite button,
+.vn-profile-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 36px;
+  color: #685741;
+  background: transparent;
+  border: 0;
+}
+.space-invite button {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.82rem;
+}
+.cloud-tools {
+  border-top: 1px solid #ded3bf;
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  color: #534638;
+}
+.cloud-tools h3,
+.cloud-tools summary {
+  font-weight: 650;
+  font-size: 1rem;
+  margin: 0.15rem 0 0.55rem;
+}
+.cloud-tools p {
+  font-size: 0.84rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.cloud-tools p:empty {
+  display: none;
+}
+.cloud-tools details {
+  margin-top: 0.7rem;
+}
+.cloud-tools summary {
+  cursor: pointer;
+}
+.ai-tools small {
+  color: #807361;
+  font-weight: 400;
+}
+.cloud-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.7rem 0;
+  font-size: 0.86rem;
+  min-width: 0;
+}
+.cloud-field input {
+  padding: 0.62rem 0.7rem;
+  width: 100%;
+  box-sizing: border-box;
+  color: inherit;
+  border: 1px solid #cebea5;
+  border-radius: 9px;
+  background: #fffcf5;
+  font: inherit;
+  font-size: 16px;
+}
+.cloud-profile-fields {
+  align-items: flex-start;
+}
+.cloud-profile-fields > :first-child {
+  flex: 2;
+}
+.cloud-profile-fields > :last-child {
+  flex: 1;
+}
+.cloud-actions {
+  flex-wrap: wrap;
+}
+.cloud-tools button {
+  border: 1px solid #d6c7ad;
+  background: #fbf6ea;
+  border-radius: 9px;
+  padding: 0.55rem 0.8rem;
+  color: #534638;
+  font-size: 0.85rem;
+}
+.cloud-tools .solid {
+  background: #77533b;
+  color: #fff8ef;
+}
+.cloud-tools button:disabled {
+  opacity: 0.55;
+}
+.cloud-actions[hidden],
+.cloud-tools [hidden] {
+  display: none;
+}
+.trash-item {
+  justify-content: space-between;
+  border-bottom: 1px dashed #d8cbb6;
+  padding: 0.45rem 0;
+}
+.trash-item span {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.trash-item small {
+  font-size: 0.72rem;
+  color: #766755;
+}
+.author-mark {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.28rem;
+  height: 1.28rem;
+  padding: 0 0.15rem;
+  border-radius: 50%;
+  background: #fff5de;
+  color: #68543d;
+  border: 1px solid #bbab92;
+  font-size: 0.68rem;
+  line-height: 1;
+  font-weight: 600;
+  vertical-align: middle;
+  flex: none;
+}
+.card-cover > .author-mark,
+.vn-cover > .author-mark {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+}
+.vn-profile-link {
+  font-size: 0.83rem;
+  text-decoration: underline;
+  text-underline-offset: 0.22rem;
+}
+.venue-alias {
+  color: #776953;
+  font-size: 0.85rem;
+}

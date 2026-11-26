@@ -517,14 +517,19 @@ export function recommendationQuote(
 }
 
 export function publicAuthor(value) {
-  if (!value || typeof value.nickname !== 'string' || !value.nickname.trim()) return null
+  if (!value || typeof value.nickname !== 'string' || !value.nickname.trim())
+    return null
   const nickname = value.nickname.trim()
-  return {nickname, initial: String(value.initial || Array.from(nickname)[0]).trim()}
+  return {
+    nickname,
+    initial: String(value.initial || Array.from(nickname)[0]).trim(),
+  }
 }
 
 export function authorship(value) {
-  const author = publicAuthor(value?.author), updatedBy = publicAuthor(value?.updatedBy)
-  return {...(author ? {author} : {}), ...(updatedBy ? {updatedBy} : {})}
+  const author = publicAuthor(value?.author),
+    updatedBy = publicAuthor(value?.updatedBy)
+  return { ...(author ? { author } : {}), ...(updatedBy ? { updatedBy } : {}) }
 }
 
 export function createEntry(fields = {}) {
@@ -841,7 +846,8 @@ function meanRating(entries) {
 export function groupVenues(entries, profiles = []) {
   const aliases = new Map()
   for (const profile of profiles) {
-    for (const name of [profile.name, ...(profile.aliases || [])]) aliases.set(venueKey(name), profile)
+    for (const name of [profile.name, ...(profile.aliases || [])])
+      aliases.set(venueKey(name), profile)
   }
   const groups = new Map()
   for (const entry of [...entries].sort(chronological)) {
@@ -851,7 +857,9 @@ export function groupVenues(entries, profiles = []) {
     const key = venueKey(profile?.name || venueName)
     if (diningSource !== 'out' || !key) continue
     if (!groups.has(key)) groups.set(key, [])
-    groups.get(key).push({ entry, venueName: profile?.name || venueName, profile })
+    groups
+      .get(key)
+      .push({ entry, venueName: profile?.name || venueName, profile })
   }
   const venues = []
   for (const [key, visits] of groups) {
@@ -861,7 +869,7 @@ export function groupVenues(entries, profiles = []) {
     venues.push({
       key,
       name: included[0].venueName,
-      ...(included[0].profile ? {profile:included[0].profile} : {}),
+      ...(included[0].profile ? { profile: included[0].profile } : {}),
       entries: records,
       rating: meanRating(records),
       likedCount: records.filter(isLikedEntry).length,
@@ -869,8 +877,17 @@ export function groupVenues(entries, profiles = []) {
     })
   }
   for (const profile of profiles) {
-    const key=venueKey(profile.name)
-    if(!groups.has(key)) venues.push({key,name:profile.name,profile,entries:[],rating:0,likedCount:0,lastVisit:''})
+    const key = venueKey(profile.name)
+    if (!groups.has(key))
+      venues.push({
+        key,
+        name: profile.name,
+        profile,
+        entries: [],
+        rating: 0,
+        likedCount: 0,
+        lastVisit: '',
+      })
   }
   return venues.sort((a, b) => b.lastVisit.localeCompare(a.lastVisit))
 }

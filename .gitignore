@@ -15,6 +15,9 @@
 !/scripts/
 /scripts/*
 !/scripts/build.mjs
+!/tests/
+/tests/*
+!/tests/sync.test.mjs
 !/src/
 /src/*
 !/src/*.js

@@ -24,7 +24,8 @@ export function cloudControls() {
         ${repoField}
         <div class="cloud-profile-fields">${field('我的昵称', plain + ' data-space-name placeholder="你的昵称" maxlength="48" required')}${field('头像首字', plain + ' data-space-initial placeholder="取昵称首字" maxlength="12"')}</div>
         ${field('GitHub Fine-grained PAT', secret + ' data-space-token placeholder="仅保存在这台设备" required')}
-        <p>连接后，已有和新建的「一起看」内容会同步到这个仓库。请使用仅有该私库 Contents 读写权限的 Token。</p>
+        <p><a data-token-link href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">去 GitHub 创建专用 Token ↗</a>，选「Only select repositories」并只勾选上面的私库，允许 Contents 读写。</p>
+        <p>连接后，已有和新建的「一起看」内容都会同步到这个仓库。</p>
         <button class="solid" type="submit" data-connect>验证并连接</button>
       </form>
     </details>
@@ -94,21 +95,32 @@ export function bindCloudControls(root, sync) {
     ? status.owner + '/' + status.repo
     : (status.boundSpace || '').split('@')[0] ||
       (codeRepo ? codeRepo + '-data' : '')
+  const updateTokenLink = () => {
+    const url = new URL(
+      'https://github.com/settings/personal-access-tokens/new',
+    )
+    const owner = $('[data-space-repo]').value.trim().split('/')[0]
+    url.searchParams.set('name', 'Little Days')
+    url.searchParams.set('contents', 'write')
+    if (/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(owner))
+      url.searchParams.set('target_name', owner)
+    $('[data-token-link]').href = url.href
+  }
+  updateTokenLink()
+  $('[data-space-repo]').addEventListener('input', updateTokenLink)
   paintSpaceStatus(root, status)
   form.onsubmit = async (e) => {
     e.preventDefault()
     const save = $('[data-connect]')
     if (save.disabled) return
     save.disabled = true
-    const previous = readProfile()
-    let candidate
     try {
       const value = $('[data-space-repo]').value.trim()
       const match = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9_.-]+)$/.exec(
         value,
       )
       if (!match) throw Error('仓库名称请写成 owner/repo。')
-      candidate = profileFrom(
+      const candidate = profileFrom(
         $('[data-space-name]').value,
         $('[data-space-initial]').value,
       )
@@ -126,24 +138,14 @@ export function bindCloudControls(root, sync) {
         tell('本机记录者资料已更新。')
         return
       }
-      saveProfile(candidate)
       tell('正在验证私有仓库及权限…')
-      await sync.connect({
-        owner: match[1],
-        repo: match[2],
-        token,
-        ...candidate,
-      })
+      await sync.connect({ owner: match[1], repo: match[2], token }, () =>
+        saveProfile(candidate),
+      )
       $('[data-space-token]').value = ''
       $('[data-space-setup]').open = false
       tell('云空间已连接。')
     } catch (error) {
-      if (
-        candidate &&
-        sync.status().phase !== 'offline' &&
-        sync.status().phase !== 'error'
-      )
-        saveProfile(previous)
       tell(error.message || '未能连接。请检查仓库名称和 Token 权限。')
     } finally {
       save.disabled = false

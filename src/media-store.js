@@ -1,4 +1,4 @@
-import {assetPath} from './paths.js'
+import { assetPath } from './paths.js'
 // A local media reference is only resolved against this browser's IndexedDB.
 // The page never requests it from a server, including on a LAN without HTTPS.
 export const mediaPrefix = '/__little_days_media__/'
@@ -14,7 +14,10 @@ const escapes = {
 }
 export function mediaAttributes(url) {
   if (!url) return ''
-  const safe = String(isLocalMedia(url) ? url : assetPath(url)).replace(/[&<>"']/g, (ch) => escapes[ch])
+  const safe = String(isLocalMedia(url) ? url : assetPath(url)).replace(
+    /[&<>"']/g,
+    (ch) => escapes[ch],
+  )
   return (isLocalMedia(url) ? 'data-local-media' : 'src') + '="' + safe + '"'
 }
 

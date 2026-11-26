@@ -201,13 +201,15 @@ function listSuggestions() {
       primary[0] ||
       choices[0]
     if (first) {
-      setPreference(
-        'mealHistory',
-        [
-          ...recent.filter((item) => item.slot !== slot),
-          { slot, id: first.id, turn },
-        ].slice(-12),
-      )
+      // Keep references to private entries out of device preference storage.
+      if (first.visibility !== 'private')
+        setPreference(
+          'mealHistory',
+          [
+            ...recent.filter((item) => item.slot !== slot),
+            { slot, id: first.id, turn },
+          ].slice(-12),
+        )
     }
   }
   return first
@@ -1071,14 +1073,19 @@ function editPlace(place) {
     if (submit.disabled) return
     submit.disabled = true
     try {
-      const saved = await putPlaceProfile({
-        id: profile?.id,
-        name: form.elements.name.value.trim(),
-        aliases: form.elements.aliases.value
-          .split(/[,，、]/u)
-          .map((x) => x.trim())
-          .filter(Boolean),
-      })
+      const name = form.elements.name.value.trim()
+      const aliases = form.elements.aliases.value
+        .split(/[,，、]/u)
+        .map((x) => x.trim())
+        .filter(Boolean)
+      const fields = profile ? { id: profile.id } : {}
+      if (!profile || name !== profile.name) fields.name = name
+      if (
+        !profile ||
+        JSON.stringify(aliases) !== JSON.stringify(profile.aliases)
+      )
+        fields.aliases = aliases
+      const saved = await putPlaceProfile(fields, { editing: Boolean(profile) })
       placeProfiles = await readPlaceProfiles()
       closeOverlay()
       navigate('venues/' + encodeURIComponent(venueKey(saved.name)))

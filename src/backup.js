@@ -1,5 +1,10 @@
 import { CATEGORIES } from './journal.js'
-import { exportRecords, replaceRecords, requestDone, normalizePlace } from './storage.js'
+import {
+  exportRecords,
+  replaceRecords,
+  requestDone,
+  normalizePlace,
+} from './storage.js'
 import {
   exportPlanSnapshot,
   planSnapshotEntries,
@@ -221,9 +226,15 @@ export function validateBackup(data) {
   checkRecords(data.records)
   const archived = checkPlans(data.plans)
   if (data.places !== undefined) {
-    requireValue(Array.isArray(data.places),'店铺档案')
-    uniqueIds(data.places,'店铺')
-    for (const item of data.places) requireValue(nonempty(item.name) && listOfStrings(item.aliases) && item.visibility === 'shared','店铺档案')
+    requireValue(Array.isArray(data.places), '店铺档案')
+    uniqueIds(data.places, '店铺')
+    for (const item of data.places)
+      requireValue(
+        nonempty(item.name) &&
+          listOfStrings(item.aliases) &&
+          item.visibility === 'shared',
+        '店铺档案',
+      )
   }
   checkPreferences(data.preferences)
   return { records: data.records.length, plans: data.plans.length, archived }
@@ -232,9 +243,11 @@ export async function exportBackup() {
   let planSnapshot, places
   const preferences = {}
   // Capture lightweight settings and plans alongside the records snapshot, before encoding media.
-  const records = await exportRecords(tx => {
+  const records = await exportRecords((tx) => {
     planSnapshot = exportPlanSnapshot(tx)
-    places = tx ? requestDone(tx.objectStore('places').getAll()) : Promise.resolve([])
+    places = tx
+      ? requestDone(tx.objectStore('places').getAll())
+      : Promise.resolve([])
     for (const key of keys) {
       const value = localStorage.getItem(prefKey(key))
       if (value !== null) preferences[key] = JSON.parse(value)
@@ -245,7 +258,7 @@ export async function exportBackup() {
     version: 1,
     exportedAt: new Date().toISOString(),
     records,
-    ...await planSnapshot,
+    ...(await planSnapshot),
     places: await places,
     preferences,
   }
@@ -253,7 +266,9 @@ export async function exportBackup() {
   return backup
 }
 function replaceLocal(data, database) {
-  const next = database ? new Map() : planSnapshotEntries(data.plans, data.generation)
+  const next = database
+    ? new Map()
+    : planSnapshotEntries(data.plans, data.generation)
   const prefs = new Set(keys.map(prefKey))
   for (const [key, value] of Object.entries(data.preferences))
     next.set(prefKey(key), JSON.stringify(value))
@@ -278,8 +293,16 @@ function replaceLocal(data, database) {
 }
 export async function importBackup(data) {
   const summary = validateBackup(data)
-  const notebook={plans:data.plans, generation:data.generation, places:(data.places||[]).map(normalizePlace)}
-  await replaceRecords(data.records, database => replaceLocal(data, database),notebook)
+  const notebook = {
+    plans: data.plans,
+    generation: data.generation,
+    places: data.places?.map(normalizePlace),
+  }
+  await replaceRecords(
+    data.records,
+    (database) => replaceLocal(data, database),
+    notebook,
+  )
   notifyPlanRestore()
   return summary
 }

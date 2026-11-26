@@ -1,11 +1,13 @@
-import {readProfile} from './cloud-profile.js'
+import { readProfile } from './cloud-profile.js'
 import {
   loadEntries,
   saveEntries,
   createEntry,
   upgradeDiningRecords,
   SEED_ENTRIES,
-  publicAuthor, authorship, venueKey,
+  publicAuthor,
+  authorship,
+  venueKey,
 } from './journal.js'
 import {
   mediaPrefix,
@@ -56,7 +58,10 @@ export function signalCloudChange() {
 }
 export function localAuthor(previous) {
   const actor = publicAuthor(readProfile())
-  return authorship({author: previous?.author || actor, updatedBy: actor || previous?.updatedBy})
+  return authorship({
+    author: previous?.author || actor,
+    updatedBy: actor || previous?.updatedBy,
+  })
 }
 export function announce(event = 'updated', local = false) {
   if (event !== 'cloud') signalCloudChange()
@@ -76,7 +81,8 @@ function writeSplit(stores, entry, previous, paths = {}) {
     const prior = previous?.[kind]
     const cloudPath = kind === 'image' ? 'cloudPhotoPath' : 'cloudAudioPath'
     if (paths[cloudPath]) meta[cloudPath] = paths[cloudPath]
-    else if (prior && prior === value && previous?.[cloudPath]) meta[cloudPath]=previous[cloudPath]
+    else if (prior && prior === value && previous?.[cloudPath])
+      meta[cloudPath] = previous[cloudPath]
     if (prior === value && isLocalMedia(prior)) continue
     const key = () =>
       mediaPrefix + encodeURIComponent(entry.id) + '/' + kind + '/' + newToken()
@@ -91,7 +97,11 @@ function writeSplit(stores, entry, previous, paths = {}) {
       const owner = records.get(decodeURIComponent(ownerKey))
       const copy = media.get(value)
       copy.onsuccess = () => {
-        if (!copy.result || (entry.visibility === 'shared' && (!owner.result || owner.result.visibility === 'private'))) {
+        if (
+          !copy.result ||
+          (entry.visibility === 'shared' &&
+            (!owner.result || owner.result.visibility === 'private'))
+        ) {
           media.transaction.abort()
           return
         }
@@ -133,8 +143,10 @@ function openDatabase() {
         db.createObjectStore('records', { keyPath: 'id' })
       if (!db.objectStoreNames.contains('settings'))
         db.createObjectStore('settings')
-      if (!db.objectStoreNames.contains('plans')) db.createObjectStore('plans', {keyPath:'id'})
-      if (!db.objectStoreNames.contains('places')) db.createObjectStore('places', {keyPath:'id'})
+      if (!db.objectStoreNames.contains('plans'))
+        db.createObjectStore('plans', { keyPath: 'id' })
+      if (!db.objectStoreNames.contains('places'))
+        db.createObjectStore('places', { keyPath: 'id' })
       if (db.objectStoreNames.contains('media')) return
       db.createObjectStore('media')
       const stores = storesFor(tx)
@@ -277,12 +289,18 @@ async function initialize() {
       for (const plan of previous.plans) tx.objectStore('plans').put(plan)
       settings.put(previous.generation, 'plan-generation')
       settings.put(true, 'plans-migrated')
-    } catch (error) { importError = error; tx.abort() }
+    } catch (error) {
+      importError = error
+      tx.abort()
+    }
   }
   function upgradeDining() {
     const initializedPlaces = settings.get('places-initialized')
     initializedPlaces.onsuccess = () => {
-      if (!initializedPlaces.result) { reconcilePlaces(tx); settings.put(true,'places-initialized') }
+      if (!initializedPlaces.result) {
+        propagatePrivacy(tx)
+        settings.put(true, 'places-initialized')
+      }
     }
     const mig = settings.get('dining-examples-v1')
     mig.onsuccess = () => {
@@ -327,10 +345,63 @@ async function initialize() {
   // Only remove source data this initialization actually copied. An old localStorage
   // snapshot beside an established database may contain unmerged edits from an older browser.
   clearCopiedLegacy(copiedLegacy)
-  if (copiedPlans) for (const [key,value] of copiedPlans) {
-    if (isPlanStorageKey(key) && localStorage.getItem(key) === value) localStorage.removeItem(key)
-  }
+  if (copiedPlans)
+    for (const [key, value] of copiedPlans) {
+      if (isPlanStorageKey(key) && localStorage.getItem(key) === value)
+        localStorage.removeItem(key)
+    }
+  await migratePrivateState(db)
   return db
+}
+
+async function migratePrivateState(db) {
+  // An older tab could leave an unmerged plaintext journal beside an established database.
+  // Bring its private rows over without replacing the current copy or deleting shared legacy edits.
+  let source,
+    legacy = []
+  try {
+    source = localStorage.getItem(journalKey)
+    const parsed = source ? JSON.parse(source) : []
+    if (Array.isArray(parsed)) legacy = parsed
+  } catch {}
+  const privateRows = legacy.filter((row) => row?.visibility === 'private')
+  const tx = db.transaction(recordStores, 'readwrite'),
+    done = transactionDone(tx)
+  const settings = tx.objectStore('settings'),
+    stores = storesFor(tx),
+    migrated = settings.get('privacy-initialized-v1')
+  let cause
+  migrated.onsuccess = () => {
+    if (migrated.result && !privateRows.length) return
+    const existing = stores.records.getAllKeys()
+    existing.onsuccess = () => {
+      try {
+        const used = new Set(existing.result)
+        for (const row of privateRows) {
+          const id = used.has(row.id) ? 'legacy-private-' + newToken() : row.id
+          const entry = createEntry({ ...row, id, visibility: 'private' })
+          writeSplit(stores, entry)
+          used.add(entry.id)
+        }
+        propagatePrivacy(tx)
+        settings.put(true, 'privacy-initialized-v1')
+      } catch (e) {
+        cause = e
+        tx.abort()
+      }
+    }
+  }
+  try {
+    await done
+  } catch (e) {
+    throw cause || e
+  }
+  if (!privateRows.length) return
+  if (localStorage.getItem(journalKey) === source) {
+    const shared = legacy.filter((row) => row?.visibility !== 'private')
+    if (shared.length) localStorage.setItem(journalKey, JSON.stringify(shared))
+    else localStorage.removeItem(journalKey)
+  }
 }
 
 export async function readRecords() {
@@ -426,32 +497,67 @@ export function exportRecords(onSnapshot) {
 }
 
 export async function putRecord(fields, original) {
-  const draft = createEntry(fields), before = original ? createEntry(original) : null
+  const draft = createEntry(fields),
+    before = original ? createEntry(original) : null
   const db = await journalDatabase()
   function merge(prior) {
-    if (before && !prior) throw new Error('这篇手记已被移除，请重新打开手记列表。')
-    if (!before) return createEntry({...draft, ...localAuthor(prior)})
-    const merged={...prior}
-    for(const key of new Set([...Object.keys(before), ...Object.keys(draft)])) {
-      if (['id','author','updatedBy'].includes(key)) continue
-      const a=before[key], b=draft[key]
-      if (a === b || (Array.isArray(a) && Array.isArray(b) && a.length===b.length && a.every((value,i)=>value===b[i]))) continue
+    if (before && !prior)
+      throw new Error('这篇手记已被移除，请重新打开手记列表。')
+    if (!before) return createEntry({ ...draft, ...localAuthor(prior) })
+    const merged = { ...prior }
+    for (const key of new Set([
+      ...Object.keys(before),
+      ...Object.keys(draft),
+    ])) {
+      if (['id', 'author', 'updatedBy'].includes(key)) continue
+      const a = before[key],
+        b = draft[key]
+      if (
+        a === b ||
+        (Array.isArray(a) &&
+          Array.isArray(b) &&
+          a.length === b.length &&
+          a.every((value, i) => value === b[i]))
+      )
+        continue
       if (b === undefined) delete merged[key]
-      else merged[key]=b
+      else merged[key] = b
     }
-    return createEntry({...merged,...localAuthor(prior)})
+    return createEntry({ ...merged, ...localAuthor(prior) })
   }
   let result = draft
   if (db) {
-    const tx = db.transaction(['records', 'media', 'places', 'settings'], 'readwrite'),
+    const tx = db.transaction(recordStores, 'readwrite'),
       stores = storesFor(tx)
     const prior = stores.records.get(draft.id)
     let issue
     prior.onsuccess = () => {
       try {
-        const entry=merge(prior.result)
+        const entry = merge(prior.result)
         result = writeSplit(stores, entry, prior.result)
-        if (entry.diningSource === 'out' || prior.result?.diningSource === 'out') reconcilePlaces(tx)
+        if (
+          entry.visibility === 'private' ||
+          prior.result?.visibility === 'private' ||
+          entry.id.startsWith('plan-note-')
+        ) {
+          if (
+            entry.visibility === 'private' ||
+            prior.result?.visibility === 'private'
+          )
+            setPrivacyMarker(
+              tx,
+              'entries',
+              entry.id,
+              entry.visibility === 'private',
+            )
+          propagatePrivacy(tx, (scope) => {
+            if (scope.entries.has(entry.id)) result.visibility = 'private'
+          })
+        } else if (
+          entry.diningSource === 'out' ||
+          prior.result?.diningSource === 'out'
+        )
+          reconcilePlaces(tx)
       } catch (e) {
         issue = e
         tx.abort()
@@ -464,9 +570,11 @@ export async function putRecord(fields, original) {
     }
   } else {
     await lock(() => {
-      const previous=loadEntries(),entry=merge(previous.find(e=>e.id===draft.id))
-      if (entry.visibility === 'private') throw new Error('此浏览器未开放 IndexedDB，无法保存仅自己可见的内容。')
-      result=entry
+      const previous = loadEntries(),
+        entry = merge(previous.find((e) => e.id === draft.id))
+      if (entry.visibility === 'private')
+        throw new Error('此浏览器未开放 IndexedDB，无法保存仅自己可见的内容。')
+      result = entry
       const others = previous.filter((e) => e.id !== entry.id)
       const flipped = favoriteBits(localStorage).has(
         encodeURIComponent(entry.id),
@@ -488,7 +596,7 @@ function favoriteKeys(storage) {
 export async function removeRecord(id) {
   const db = await journalDatabase()
   if (db) {
-    const tx = db.transaction(['records', 'media', 'places', 'settings'], 'readwrite'),
+    const tx = db.transaction(recordStores, 'readwrite'),
       stores = storesFor(tx)
     const req = stores.records.get(id)
     req.onsuccess = () => {
@@ -496,7 +604,10 @@ export async function removeRecord(id) {
         if (isLocalMedia(req.result?.[kind]))
           stores.media.delete(req.result[kind])
       stores.records.delete(id)
-      if (req.result?.diningSource === 'out') reconcilePlaces(tx)
+      if (req.result?.visibility === 'private') {
+        setPrivacyMarker(tx, 'entries', id, true)
+        propagatePrivacy(tx)
+      } else if (req.result?.diningSource === 'out') reconcilePlaces(tx)
     }
     await transactionDone(tx)
   } else {
@@ -518,8 +629,12 @@ export async function toggleRecordFavorite(id) {
     const req = store.get(id)
     req.onsuccess = () => {
       if (req.result) {
-        updated = createEntry({ ...req.result, ...localAuthor(req.result), favorite: !req.result.favorite })
-        store.put(updated)
+        updated = createEntry({
+          ...req.result,
+          ...localAuthor(req.result),
+          favorite: !req.result.favorite,
+        })
+        store.put({ ...req.result, ...updated })
       }
     }
     await transactionDone(tx)
@@ -557,16 +672,52 @@ export async function replaceRecords(rows, applyLocal, notebook) {
       const done = transactionDone(tx)
       let issue
       try {
+        // Record withdrawals in the same replacement transaction, including rows absent from the backup.
+        const oldRecords = stores.records.getAll()
+        const oldPlans = tx.objectStore('plans').getAll()
+        oldPlans.onsuccess = () => {
+          for (const [kind, old, next] of [
+            ['entries', oldRecords.result, rows],
+            ['freetime', oldPlans.result, notebook?.plans || oldPlans.result],
+          ]) {
+            const present = new Map(next.map((row) => [row.id, row]))
+            for (const row of old)
+              if (row.visibility === 'private' && !present.has(row.id))
+                setPrivacyMarker(tx, kind, row.id, true)
+            for (const row of next)
+              setPrivacyMarker(tx, kind, row.id, row.visibility === 'private')
+          }
+          propagatePrivacy(tx)
+        }
         stores.records.clear()
         stores.media.clear()
         for (const row of rows) writeSplit(stores, createEntry(row))
         if (notebook) {
-          const plans = tx.objectStore('plans'), places = tx.objectStore('places')
-          plans.clear(); places.clear()
+          const plans = tx.objectStore('plans'),
+            places = tx.objectStore('places')
+          plans.clear()
+          places.clear()
           for (const plan of notebook.plans) plans.put(plan)
           for (const place of notebook.places || []) places.put(place)
           settings.put(notebook.generation, 'plan-generation')
-          reconcilePlaces(tx)
+          if (notebook.places) {
+            const represented = new Set(
+              notebook.places
+                .flatMap((place) => [place.name, ...place.aliases])
+                .map(venueKey),
+            )
+            const missing = rows
+              .filter(
+                (row) =>
+                  row.visibility !== 'private' &&
+                  !row.isSample &&
+                  row.diningSource === 'out' &&
+                  row.venueName,
+              )
+              .map((row) => venueKey(row.venueName))
+              .filter((key) => !represented.has(key))
+            settings.put([...new Set(missing)], 'removed-place-keys')
+          }
         }
         settings.put(true, 'initialized')
         const last = settings.put(true, 'dining-examples-v1')
@@ -589,7 +740,11 @@ export async function replaceRecords(rows, applyLocal, notebook) {
         throw issue || e
       }
     } else {
-      if (rows.some(r => r.visibility === 'private') || notebook?.plans.some(p => p.visibility === 'private')) throw new Error('恢复私密内容需要可用的 IndexedDB。')
+      if (
+        rows.some((r) => r.visibility === 'private') ||
+        notebook?.plans.some((p) => p.visibility === 'private')
+      )
+        throw new Error('恢复私密内容需要可用的 IndexedDB。')
       const backup = new Map(
         [
           journalKey,
@@ -642,96 +797,276 @@ export function normalizePlace(fields) {
   if (!name) throw new Error('请填写店铺名称。')
   const aliases = new Map()
   for (const value of fields.aliases || []) {
-    const alias = String(value).trim(), key = venueKey(alias)
+    const alias = String(value).trim(),
+      key = venueKey(alias)
     if (key && key !== venueKey(name)) aliases.set(key, alias)
   }
-  return {id:String(fields.id || 'place-' + venueKey(name)), name, aliases:[...aliases.values()],
-    visibility:'shared', ...authorship(fields), ...(fields.automatic === true ? {automatic:true} : {})}
+  return {
+    id: String(fields.id || 'place-' + venueKey(name)),
+    name,
+    aliases: [...aliases.values()],
+    visibility: 'shared',
+    ...authorship(fields),
+    ...(fields.automatic === true ? { automatic: true } : {}),
+  }
 }
 
+const privacyPrefix = 'privacy-withdraw:'
+function readWithdrawals(tx) {
+  return tx
+    .objectStore('settings')
+    .getAll(IDBKeyRange.bound(privacyPrefix, privacyPrefix + '\uffff'))
+}
+export function localPrivacy(records, plans, withdrawals = []) {
+  const entries = new Set(
+    records.filter((row) => row.visibility === 'private').map((row) => row.id),
+  )
+  const freetime = new Set(
+    plans
+      .filter((plan) => plan.visibility === 'private')
+      .map((plan) => plan.id),
+  )
+  for (const mark of withdrawals) {
+    if (mark.kind === 'entries') entries.add(mark.id)
+    if (mark.kind === 'freetime') freetime.add(mark.id)
+  }
+  // A plan can point at a journal made from another plan. Resolve until both sets stabilize.
+  let count
+  do {
+    count = entries.size + freetime.size
+    for (const plan of plans) {
+      const sources = [
+        plan,
+        ...(plan.completions || []),
+        ...(plan.reopened || []),
+      ]
+      if (sources.some((row) => entries.has(row.sourceEntryId)))
+        freetime.add(plan.id)
+    }
+    for (const record of records) {
+      const match = /^plan-note-([^:]+):/.exec(record.id)
+      if (match)
+        try {
+          if (freetime.has(decodeURIComponent(match[1]))) entries.add(record.id)
+        } catch {}
+    }
+  } while (count !== entries.size + freetime.size)
+  return { entries, freetime, places: new Set() }
+}
+export function setPrivacyMarker(tx, kind, id, restricted) {
+  const table = tx.objectStore('settings'),
+    key = privacyPrefix + kind + ':' + encodeURIComponent(id)
+  if (restricted) table.put({ kind, id }, key)
+  else table.delete(key)
+}
+// Preserve restrictions even when a source and its linked archive are removed while offline.
+export function propagatePrivacy(tx, after) {
+  const records = tx.objectStore('records'),
+    plans = tx.objectStore('plans')
+  const rows = records.getAll(),
+    tasks = plans.getAll(),
+    marks = readWithdrawals(tx)
+  marks.onsuccess = () => {
+    const scope = localPrivacy(rows.result, tasks.result, marks.result)
+    const known = new Set(marks.result.map((m) => m.kind + ':' + m.id))
+    for (const kind of ['entries', 'freetime'])
+      for (const id of scope[kind])
+        if (!known.has(kind + ':' + id)) setPrivacyMarker(tx, kind, id, true)
+    for (const row of rows.result)
+      if (scope.entries.has(row.id) && row.visibility !== 'private')
+        records.put({ ...row, visibility: 'private' })
+    for (const plan of tasks.result)
+      if (scope.freetime.has(plan.id)) {
+        const history = [...(plan.completions || []), ...(plan.reopened || [])]
+        if (
+          plan.visibility === 'private' &&
+          history.every((row) => row.visibility === 'private')
+        )
+          continue
+        const privateRows = (rows) =>
+          rows.map((row) => ({ ...row, visibility: 'private' }))
+        plans.put({
+          ...plan,
+          visibility: 'private',
+          completions: privateRows(plan.completions || []),
+          reopened: privateRows(plan.reopened || []),
+        })
+      }
+    reconcilePlaces(tx)
+    after?.(scope)
+  }
+}
 function reconcilePlaces(tx) {
-  const meta=tx.objectStore('settings'), suppress=meta.get('removed-place-keys'), withdrawal=meta.get('withdrawn-places')
-  const records = tx.objectStore('records').getAll(), places = tx.objectStore('places'), profiles = places.getAll()
+  const meta = tx.objectStore('settings'),
+    suppress = meta.get('removed-place-keys'),
+    withdrawal = meta.get('withdrawn-places')
+  const records = tx.objectStore('records').getAll(),
+    places = tx.objectStore('places'),
+    profiles = places.getAll()
   profiles.onsuccess = () => {
-    const known = new Map(), used = new Set(), privateNames=new Set(), withdrawn=new Set(withdrawal.result||[])
-    for (const place of profiles.result) for (const name of [place.name, ...place.aliases]) known.set(venueKey(name), place)
+    const known = new Map(),
+      used = new Set(),
+      privateNames = new Set(),
+      withdrawn = new Set(withdrawal.result || [])
+    for (const place of profiles.result)
+      for (const name of [place.name, ...place.aliases])
+        known.set(venueKey(name), place)
     for (const record of records.result) {
-      if (record.visibility==='private' && record.diningSource==='out' && record.venueName) privateNames.add(venueKey(record.venueName))
-      if (record.visibility === 'private' || record.isSample || String(record.id).startsWith('sample-') || record.diningSource !== 'out' || !record.venueName) continue
+      if (
+        record.visibility === 'private' &&
+        record.diningSource === 'out' &&
+        record.venueName
+      )
+        privateNames.add(venueKey(record.venueName))
+      if (
+        record.visibility === 'private' ||
+        record.isSample ||
+        String(record.id).startsWith('sample-') ||
+        record.diningSource !== 'out' ||
+        !record.venueName
+      )
+        continue
       const key = venueKey(record.venueName)
       let place = known.get(key)
       if (!place) {
         if ((suppress.result || []).includes(key)) continue
-        place = normalizePlace({name:record.venueName, author:record.author, automatic:true})
-        places.put(place); known.set(key, place)
+        place = normalizePlace({
+          name: record.venueName,
+          author: record.author,
+          automatic: true,
+        })
+        places.put(place)
+        known.set(key, place)
       }
       used.add(place.id)
     }
-    for(const id of used) withdrawn.delete(id)
-    for (const place of profiles.result) if (place.automatic && !used.has(place.id)) {
-      if ([place.name,...place.aliases].some(n=>privateNames.has(venueKey(n)))) withdrawn.add(place.id)
-      places.delete(place.id)
-    }
-    meta.put([...withdrawn],'withdrawn-places')
+    for (const id of used) withdrawn.delete(id)
+    for (const place of profiles.result)
+      if (place.automatic && !used.has(place.id)) {
+        if (
+          [place.name, ...place.aliases].some((n) =>
+            privateNames.has(venueKey(n)),
+          )
+        )
+          withdrawn.add(place.id)
+        places.delete(place.id)
+      }
+    meta.put([...withdrawn], 'withdrawn-places')
   }
 }
 
 export async function readPlaceProfiles() {
   const db = await journalDatabase()
-  return db ? await requestDone(db.transaction('places').objectStore('places').getAll()) : []
+  return db
+    ? await requestDone(db.transaction('places').objectStore('places').getAll())
+    : []
 }
 
-export async function putPlaceProfile(fields) {
+export async function putPlaceProfile(fields, { editing = false } = {}) {
   const db = await journalDatabase()
   if (!db) throw new Error('保存共享店铺档案需要可用的 IndexedDB。')
-  const tx = db.transaction('places', 'readwrite'), table = tx.objectStore('places'), done = transactionDone(tx)
+  const tx = db.transaction('places', 'readwrite'),
+    table = tx.objectStore('places'),
+    done = transactionDone(tx)
   let result, error
   const all = table.getAll()
   all.onsuccess = () => {
     try {
       const id = fields.id || 'place-' + venueKey(fields.name)
-      const prior = all.result.find(p => p.id === id)
+      const prior = all.result.find((p) => p.id === id)
+      if (editing && !prior)
+        throw new Error('这家店铺的档案已移除，请重新打开店铺列表。')
       const aliases = fields.aliases ?? prior?.aliases ?? []
-      result = normalizePlace({...prior, ...fields, id, aliases: prior && fields.name && prior.name !== fields.name ? [...aliases, prior.name] : aliases, automatic:false, ...localAuthor(prior)})
-      const keys = new Set([result.name,...result.aliases].map(venueKey))
+      result = normalizePlace({
+        ...prior,
+        ...fields,
+        id,
+        aliases:
+          prior && fields.name && prior.name !== fields.name
+            ? [...aliases, prior.name]
+            : aliases,
+        automatic: false,
+        ...localAuthor(prior),
+      })
+      const keys = new Set([result.name, ...result.aliases].map(venueKey))
       for (const other of all.result) {
-        if (other.id === result.id || ![other.name,...other.aliases].some(n=>keys.has(venueKey(n)))) continue
-        result = normalizePlace({...result,aliases:[...result.aliases,other.name,...other.aliases]})
+        if (
+          other.id === result.id ||
+          ![other.name, ...other.aliases].some((n) => keys.has(venueKey(n)))
+        )
+          continue
+        result = normalizePlace({
+          ...result,
+          aliases: [...result.aliases, other.name, ...other.aliases],
+        })
         table.delete(other.id)
       }
       table.put(result)
-    } catch(e) { error = e; tx.abort() }
+    } catch (e) {
+      error = e
+      tx.abort()
+    }
   }
-  try { await done } catch(e) { throw error || e }
+  try {
+    await done
+  } catch (e) {
+    throw error || e
+  }
   announce('places', true)
   return result
 }
 
-function suppressPlace(tx,place) {
-  const settings=tx.objectStore('settings'), read=settings.get('removed-place-keys')
-  read.onsuccess=()=>settings.put([...new Set([...(read.result||[]),...[place.name,...place.aliases].map(venueKey)])],'removed-place-keys')
+function suppressPlace(tx, place) {
+  const settings = tx.objectStore('settings'),
+    read = settings.get('removed-place-keys')
+  read.onsuccess = () =>
+    settings.put(
+      [
+        ...new Set([
+          ...(read.result || []),
+          ...[place.name, ...place.aliases].map(venueKey),
+        ]),
+      ],
+      'removed-place-keys',
+    )
 }
 
 export async function deletePlaceProfile(id) {
   const db = await journalDatabase()
   if (!db) return
-  const tx = db.transaction(['places','settings'],'readwrite'), places = tx.objectStore('places')
+  const tx = db.transaction(['places', 'settings'], 'readwrite'),
+    places = tx.objectStore('places')
   const prior = places.get(id)
-  prior.onsuccess=()=>{ if(prior.result) suppressPlace(tx,prior.result); places.delete(id) }
-  await transactionDone(tx); announce('places',true)
+  prior.onsuccess = () => {
+    if (prior.result) suppressPlace(tx, prior.result)
+    places.delete(id)
+  }
+  await transactionDone(tx)
+  announce('places', true)
 }
 
 export async function sharedLocalState() {
   const db = await journalDatabase()
   if (!db) throw new Error('同步需要可用的 IndexedDB。')
   const actor = publicAuthor(readProfile())
-  const tx = db.transaction(['records','plans','places','settings'], actor ? 'readwrite' : 'readonly')
+  const tx = db.transaction(
+    ['records', 'plans', 'places', 'settings'],
+    actor ? 'readwrite' : 'readonly',
+  )
+  const withdrawals = readWithdrawals(tx)
   const withdrawn = tx.objectStore('settings').get('withdrawn-places')
-  const all = ['records','plans','places'].map(name => {
-    const table = tx.objectStore(name), read = table.getAll()
+  const all = ['records', 'plans', 'places'].map((name) => {
+    const table = tx.objectStore(name),
+      read = table.getAll()
     read.onsuccess = () => {
       for (const row of read.result) {
-        if (actor && !row.author && row.visibility !== 'private' && !row.isSample && !String(row.id).startsWith('sample-')) {
+        if (
+          actor &&
+          !row.author &&
+          row.visibility !== 'private' &&
+          !row.isSample &&
+          !String(row.id).startsWith('sample-')
+        ) {
           row.author = actor
           table.put(row)
         }
@@ -740,39 +1075,74 @@ export async function sharedLocalState() {
     return read
   })
   await transactionDone(tx)
-  return {entries:all[0].result, freetime:all[1].result, places:all[2].result,withdrawn:withdrawn.result||[]}
+  return {
+    entries: all[0].result,
+    freetime: all[1].result,
+    places: all[2].result,
+    withdrawn: withdrawn.result || [],
+    withdrawals: withdrawals.result,
+  }
 }
 
 // Re-check the expected metadata and any private relations in the same transaction
 // that replaces the item. Downloading an attachment can take longer than a local edit.
-export async function applyCloudObject(kind, id, value, accepts, paths={}) {
+export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
   const db = await journalDatabase()
   if (!db) throw new Error('同步需要可用的 IndexedDB。')
-  const tableName = {entries:'records',freetime:'plans',places:'places'}[kind]
+  const tableName = { entries: 'records', freetime: 'plans', places: 'places' }[
+    kind
+  ]
   if (!tableName) throw new Error('不支持的同步内容。')
-  const tx = db.transaction(recordStores,'readwrite'), done = transactionDone(tx)
-  const table = tx.objectStore(tableName), current = table.get(id)
-  const withdrawn = tx.objectStore('settings').get('withdrawn-places'), records = tx.objectStore('records').getAll(), plans = tx.objectStore('plans').getAll()
-  let accepted = false, cause
+  const tx = db.transaction(recordStores, 'readwrite'),
+    done = transactionDone(tx)
+  const table = tx.objectStore(tableName),
+    current = table.get(id)
+  const withdrawals = readWithdrawals(tx)
+  const withdrawn = tx.objectStore('settings').get('withdrawn-places'),
+    records = tx.objectStore('records').getAll(),
+    plans = tx.objectStore('plans').getAll()
+  let accepted = false,
+    cause
   plans.onsuccess = () => {
     try {
-      if (!accepts(current.result || null, records.result, plans.result,withdrawn.result||[])) return
+      if (
+        !accepts(
+          current.result || null,
+          records.result,
+          plans.result,
+          withdrawn.result || [],
+          withdrawals.result,
+        )
+      )
+        return
       if (kind === 'entries' && value) {
-        const next=createEntry(value)
-        if (paths.keepPhoto && current.result?.image) next.image=current.result.image
-        if (paths.keepAudio && current.result?.audio) next.audio=current.result.audio
-        writeSplit(storesFor(tx),next,current.result,paths)
-      }
-      else if (value) table.put(value)
+        const next = createEntry(value)
+        if (paths.keepPhoto && current.result?.image)
+          next.image = current.result.image
+        if (paths.keepAudio && current.result?.audio)
+          next.audio = current.result.audio
+        writeSplit(storesFor(tx), next, current.result, paths)
+      } else if (value) table.put(value)
       else {
-        if (kind === 'entries') for (const key of kinds) if (isLocalMedia(current.result?.[key])) tx.objectStore('media').delete(current.result[key])
-        if(kind === 'places' && current.result) suppressPlace(tx,current.result)
+        if (kind === 'entries')
+          for (const key of kinds)
+            if (isLocalMedia(current.result?.[key]))
+              tx.objectStore('media').delete(current.result[key])
+        if (kind === 'places' && current.result)
+          suppressPlace(tx, current.result)
         table.delete(id)
       }
       accepted = true
-    } catch(e) { cause = e; tx.abort() }
+    } catch (e) {
+      cause = e
+      tx.abort()
+    }
   }
-  try { await done } catch(e) { throw cause || e }
+  try {
+    await done
+  } catch (e) {
+    throw cause || e
+  }
   if (accepted) announce('cloud', true)
   return accepted
 }
@@ -780,17 +1150,27 @@ export async function applyCloudObject(kind, id, value, accepts, paths={}) {
 export async function readSharedAttachment(id, kind, expectedRef) {
   const db = await journalDatabase()
   if (!db || !kinds.includes(kind)) throw new Error('共享附件不可用。')
-  const tx = db.transaction(['records','media']), read = tx.objectStore('records').get(id)
+  const tx = db.transaction(['records', 'media']),
+    read = tx.objectStore('records').get(id)
   let result, ref
   read.onsuccess = () => {
-    const entry=read.result
-    if (!entry || entry.isSample || entry.visibility==='private' || entry[kind]!==expectedRef) return
-    ref=entry[kind]
-    if (isLocalMedia(ref)) result=tx.objectStore('media').get(ref)
+    const entry = read.result
+    if (
+      !entry ||
+      entry.isSample ||
+      entry.visibility === 'private' ||
+      entry[kind] !== expectedRef
+    )
+      return
+    ref = entry[kind]
+    if (isLocalMedia(ref)) result = tx.objectStore('media').get(ref)
   }
   await transactionDone(tx)
-  if (!ref || (isLocalMedia(ref) && !result?.result)) throw new Error('附件或可见范围已改变，请重新同步。')
+  if (!ref || (isLocalMedia(ref) && !result?.result))
+    throw new Error('附件或可见范围已改变，请重新同步。')
   if (!isLocalMedia(ref)) return ref
-  const value=result.result
-  return value instanceof Blob ? value : new Blob([value.bytes],{type:value.type})
+  const value = result.result
+  return value instanceof Blob
+    ? value
+    : new Blob([value.bytes], { type: value.type })
 }

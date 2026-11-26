@@ -22,6 +22,8 @@ export { mediaAttributes }
 const favoritePrefix = 'xiaorizi.favorite-toggle:'
 const journalKey = 'xiaorizi.journal.v1'
 const changeKey = 'xiaorizi.records-change'
+const mealHistoryKey = 'meal-history'
+const oldMealHistoryKey = 'little.days.mealHistory'
 const channel =
   typeof BroadcastChannel === 'function'
     ? new BroadcastChannel('little-days-changes')
@@ -76,6 +78,7 @@ export function announce(event = 'updated', local = false) {
   else
     try {
       localStorage.setItem(changeKey, JSON.stringify([event, newToken()]))
+      localStorage.removeItem(changeKey)
     } catch {}
   if (local) for (const fn of listeners) fn(event)
 }
@@ -274,6 +277,41 @@ function legacySnapshot() {
     return null
   }
 }
+function validMealPicks(value) {
+  return Array.isArray(value)
+    ? value
+        .filter(
+          (row) =>
+            row &&
+            typeof row.slot === 'string' &&
+            row.slot &&
+            typeof row.id === 'string' &&
+            row.id &&
+            Number.isSafeInteger(row.turn) &&
+            row.turn >= 0,
+        )
+        .map(({ slot, id, turn }) => ({ slot, id, turn }))
+    : []
+}
+export function withMealPick(history, pick) {
+  return [...history.filter((row) => row.slot !== pick.slot), pick].slice(-12)
+}
+
+export async function readMealHistory(transaction) {
+  const tx = transaction || (await journalDatabase()).transaction('settings')
+  return requestDone(tx.objectStore('settings').get(mealHistoryKey))
+}
+
+export async function rememberMealPick(pick) {
+  const db = await journalDatabase()
+  const tx = db.transaction('settings', 'readwrite'),
+    table = tx.objectStore('settings')
+  const previous = table.get(mealHistoryKey)
+  previous.onsuccess = () =>
+    table.put(withMealPick(previous.result || [], pick), mealHistoryKey)
+  await transactionDone(tx)
+}
+
 export async function journalDatabase() {
   if (initialized) return initialized
   initialized = initialize().catch((error) => {
@@ -300,6 +338,26 @@ async function initialize() {
   const done = transactionDone(tx),
     stores = storesFor(tx),
     settings = tx.objectStore('settings')
+  let oldMealHistory
+  try {
+    oldMealHistory = localStorage.getItem(oldMealHistoryKey)
+  } catch {}
+  if (typeof oldMealHistory === 'string') {
+    let legacy = []
+    try {
+      legacy = validMealPicks(JSON.parse(oldMealHistory))
+    } catch {}
+    const read = settings.get(mealHistoryKey)
+    read.onsuccess = () => {
+      // A previous migration or another tab may already hold newer picks.
+      const merged = new Map()
+      for (const row of [...legacy, ...validMealPicks(read.result)]) {
+        merged.delete(row.slot)
+        merged.set(row.slot, row)
+      }
+      settings.put([...merged.values()].slice(-12), mealHistoryKey)
+    }
+  }
   const started = settings.get('initialized'),
     plansReady = settings.get('plans-migrated')
   const diningReady = settings.get('dining-examples-v1'),
@@ -464,6 +522,12 @@ async function initialize() {
     await done
   } catch (error) {
     throw importError || error
+  }
+  if (typeof oldMealHistory === 'string') {
+    try {
+      if (localStorage.getItem(oldMealHistoryKey) === oldMealHistory)
+        localStorage.removeItem(oldMealHistoryKey)
+    } catch {}
   }
   // If an older page changes a key during migration, keep it for the next import.
   if (stamp) {
@@ -739,6 +803,11 @@ export async function replaceRecords(rows, applyLocal, notebook) {
         for (const plan of notebook.plans) plans.put(plan)
         for (const place of notebook.places || []) places.put(place)
         settings.put(notebook.generation, 'plan-generation')
+        if (Object.hasOwn(notebook, 'mealHistory')) {
+          if (notebook.mealHistory === undefined)
+            settings.delete(mealHistoryKey)
+          else settings.put(notebook.mealHistory, mealHistoryKey)
+        }
         if (notebook.places) {
           const represented = new Set(
             notebook.places

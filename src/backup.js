@@ -4,6 +4,7 @@ import {
   replaceRecords,
   requestDone,
   normalizePlace,
+  readMealHistory,
   journalDatabase,
   transactionDone,
   writeSplit,
@@ -15,13 +16,7 @@ import { assetPath } from './paths.js'
 import { preparePrivateRestore } from './private-restore.js'
 
 const signature = 'little-days-backup'
-const keys = [
-  'recommendDining',
-  'layout',
-  'allowPicks',
-  'samples',
-  'mealHistory',
-]
+const preferenceKeys = ['recommendDining', 'layout', 'allowPicks', 'samples']
 const prefKey = (key) => 'little.days.' + key
 const scopes = ['private', 'shared']
 const kinds = ['wish', 'chore', 'birthday', 'anniversary']
@@ -194,7 +189,10 @@ function checkPlans(plans) {
 }
 function checkPreferences(prefs) {
   requireValue(
-    object(prefs) && Object.keys(prefs).every((k) => keys.includes(k)),
+    object(prefs) &&
+      Object.keys(prefs).every(
+        (k) => k === 'mealHistory' || preferenceKeys.includes(k),
+      ),
     '偏好设置',
   )
   const allows = {
@@ -241,19 +239,22 @@ export function validateBackup(data) {
   return { records: data.records.length, plans: data.plans.length, archived }
 }
 export async function exportBackup() {
-  let planSnapshot, places
+  let planSnapshot, places, historySnapshot
   const preferences = {}
   // Capture lightweight settings and plans alongside the records snapshot, before encoding media.
   const records = await exportRecords((tx) => {
+    historySnapshot = readMealHistory(tx)
     planSnapshot = exportPlanSnapshot(tx)
     places = tx
       ? requestDone(tx.objectStore('places').getAll())
       : Promise.resolve([])
-    for (const key of keys) {
+    for (const key of preferenceKeys) {
       const value = localStorage.getItem(prefKey(key))
       if (value !== null) preferences[key] = JSON.parse(value)
     }
   })
+  const history = await historySnapshot
+  if (history !== undefined) preferences.mealHistory = history
   const backup = {
     format: signature,
     version: 1,
@@ -268,9 +269,10 @@ export async function exportBackup() {
 }
 function replaceLocal(data) {
   const next = new Map()
-  const prefs = new Set(keys.map(prefKey))
+  const prefs = new Set(preferenceKeys.map(prefKey))
   for (const [key, value] of Object.entries(data.preferences))
-    next.set(prefKey(key), JSON.stringify(value))
+    if (preferenceKeys.includes(key))
+      next.set(prefKey(key), JSON.stringify(value))
   const previous = new Map()
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
@@ -294,6 +296,7 @@ export async function importBackup(data) {
   const notebook = {
     plans: data.plans,
     generation: data.generation,
+    mealHistory: data.preferences.mealHistory,
     places: data.places?.map(normalizePlace),
   }
   await replaceRecords(data.records, () => replaceLocal(data), notebook)

@@ -10,6 +10,9 @@ import {
 } from './journal.js'
 import {
   readRecords,
+  readMealHistory,
+  rememberMealPick,
+  withMealPick,
   putRecord,
   removeRecord,
   toggleRecordFavorite,
@@ -130,6 +133,7 @@ function mealNow() {
   return hour >= 4 && hour < 11 ? '早餐' : '晚餐'
 }
 let meal = mealNow()
+let mealHistory = []
 let entries = [],
   section = 'home',
   category = '全部',
@@ -234,8 +238,7 @@ function listSuggestions() {
     ...ideas.slice(1),
   ].filter(Boolean)
   const slot = dayKey(new Date()) + meal
-  const history = getPreference('mealHistory', [])
-  const recent = Array.isArray(history) ? history : []
+  const recent = mealHistory
   const existing = recent.find((entry) => entry.slot === slot)
   let first = choices.find((entry) => entry.id === existing?.id)
   if (!first) {
@@ -247,16 +250,11 @@ function listSuggestions() {
       primary.find((entry) => !previousIds.has(entry.id)) ||
       primary[0] ||
       choices[0]
-    if (first) {
-      // Keep references to private entries out of device preference storage.
-      if (first.visibility !== 'private')
-        setPreference(
-          'mealHistory',
-          [
-            ...recent.filter((item) => item.slot !== slot),
-            { slot, id: first.id, turn },
-          ].slice(-12),
-        )
+    if (first && first.visibility !== 'private') {
+      const pick = { slot, id: first.id, turn }
+      mealHistory = withMealPick(recent, pick)
+      // Remembering the rotation is optional; the current pick is already visible.
+      rememberMealPick(pick).catch(() => {})
     }
   }
   return first
@@ -1217,8 +1215,9 @@ async function refreshNotebook() {
     readRecords(),
     readPlans(),
     readPlaceProfiles(),
+    readMealHistory(),
   ])
-  ;[entries, plans, placeProfiles] = notebook
+  ;[entries, plans, placeProfiles, mealHistory = []] = notebook
   storageError = ''
   layout = getPreference('layout', 'grid')
   preferredDining = getPreference('recommendDining', '')
@@ -1583,8 +1582,9 @@ async function init() {
       readRecords(),
       readPlans(),
       readPlaceProfiles(),
+      readMealHistory(),
     ])
-    ;[entries, plans, placeProfiles] = notebook
+    ;[entries, plans, placeProfiles, mealHistory = []] = notebook
   } catch (e) {
     storageError = e.message || '本机手记暂时无法读取。'
   }

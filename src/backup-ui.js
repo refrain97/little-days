@@ -40,7 +40,7 @@ export function backupControls() {
     <p data-private-backup-date></p>
     ${controls('private-backup', true)}
     <h3 id="backup-title">整本备份与迁移</h3>
-    <p>完整备份包含两种可见范围的内容、店铺和偏好。请将文件保存在自己的设备。</p>
+    <p>完整备份包含两种可见范围的内容、店铺、早餐池和偏好。请将文件保存在自己的设备。</p>
     ${controls('backup', false)}
   </section>`
 }
@@ -249,7 +249,7 @@ export function bindBackupControls(
           ? validatePrivateBackup(parsed)
           : validateBackup(parsed)
         candidate = parsed
-        status.textContent = `找到 ${summary.records} 篇手记、${summary.plans} 件清单事项、${summary.archived} 条归档。`
+        status.textContent = `找到 ${summary.records} 篇手记、${summary.plans} 件清单事项、${summary.archived} 条归档${summary.breakfastIdeas ? `、${summary.breakfastIdeas} 个早餐点子` : ''}。`
         confirmation.hidden = false
       } catch (error) {
         clearImport()
@@ -275,7 +275,7 @@ export function bindBackupControls(
           : await importBackup(candidate)
         clearImport()
         await onRestored()
-        status.textContent = `已恢复 ${summary.records} 篇手记和 ${summary.plans} 件清单事项。`
+        status.textContent = `已恢复 ${summary.records} 篇手记和 ${summary.plans} 件清单事项${summary.breakfastIdeas ? `、${summary.breakfastIdeas} 个早餐点子` : ''}。`
       } catch (error) {
         status.textContent = error.message || '恢复失败，请检查可用空间后重试。'
       } finally {

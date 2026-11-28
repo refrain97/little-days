@@ -6,6 +6,7 @@ export function registerOfflineShell() {
   let previouslyControlled = Boolean(workers.controller)
   let reloadPending = false
   let observer
+  const fontPrefix = new URL(appPath('fonts/'), location.href).href
 
   function applyUpdate() {
     if (!reloadPending) return
@@ -18,7 +19,25 @@ export function registerOfflineShell() {
     location.reload()
   }
 
+  function rememberFonts(entries) {
+    const used = entries
+      .map(({ name }) => name)
+      .filter((name) => name.startsWith(fontPrefix) && name.endsWith('.woff2'))
+    if (used.length)
+      workers.controller?.postMessage({
+        type: 'used-fonts',
+        urls: [...new Set(used)],
+      })
+  }
+  // Safari may resolve a font through the stylesheet's initial (uncontrolled)
+  // request context even after the document has gained a controller.
+  if (window.PerformanceObserver?.supportedEntryTypes?.includes('resource')) {
+    new PerformanceObserver((list) => rememberFonts(list.getEntries())).observe(
+      { entryTypes: ['resource'] },
+    )
+  }
   workers.addEventListener('controllerchange', () => {
+    rememberFonts(performance.getEntriesByType('resource'))
     if (previouslyControlled) {
       reloadPending = true
       if (!observer) {

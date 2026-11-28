@@ -51,3 +51,10 @@
 !/public/images/venue-cafe.webp
 !/public/images/venue-noodles.webp
 !/public/images/walk.webp
+!/public/fonts/
+/public/fonts/*
+!/public/fonts/days-journal.woff2
+!/public/fonts/days-breakfast.woff2
+!/public/fonts/days-freetime.woff2
+!/public/fonts/days-editor.woff2
+!/public/fonts/OFL.txt

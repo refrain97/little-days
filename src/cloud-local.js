@@ -1,4 +1,4 @@
-import { createEntry, authorship } from './journal.js'
+import { createEntry, publicAuthor } from './journal.js'
 import { normalPlan } from './plans.js'
 import {
   sharedLocalState,
@@ -75,6 +75,12 @@ const pick = (obj, fields) =>
     fields.filter((f) => obj[f] !== undefined).map((f) => [f, obj[f]]),
   )
 
+// Animal identities and stamps belong to the local notebook in this release.
+function authorship(row) {
+  const author = publicAuthor(row?.author),
+    updatedBy = publicAuthor(row?.updatedBy)
+  return { ...(author ? { author } : {}), ...(updatedBy ? { updatedBy } : {}) }
+}
 function cleanStep(row) {
   return { ...pick(row, stepFields), ...authorship(row), visibility: 'shared' }
 }

@@ -1,3 +1,6 @@
+import { breakfastKinds } from './breakfast-model.js'
+import { readBreakfast } from './breakfast-store.js'
+import { cleanStickerAuthor } from './stickers.js'
 import { CATEGORIES } from './journal.js'
 import {
   exportRecords,
@@ -78,6 +81,11 @@ function checkRecords(records) {
         CATEGORIES.includes(r.category) &&
         timestamp(r.createdAt),
       '手记内容或日期',
+    )
+    requireValue(
+      (r.isBreakfast === undefined || bool(r.isBreakfast)) &&
+        (r.breakfastKind === undefined || Object.hasOwn(breakfastKinds, r.breakfastKind)),
+      '早餐标签',
     )
     requireValue(
       scopes.includes(r.visibility) && bool(r.favorite) && bool(r.isSample),
@@ -235,14 +243,38 @@ export function validateBackup(data) {
         '店铺档案',
       )
   }
+  if (data.breakfast !== undefined) {
+    const breakfast = data.breakfast
+    requireValue(object(breakfast) && Array.isArray(breakfast.ideas), '早餐池')
+    uniqueIds(breakfast.ideas, '早餐点子')
+    for (const idea of breakfast.ideas) {
+      requireValue(
+        /^idea-[a-z0-9-]+$/i.test(idea.id) &&
+          nonempty(idea.title) && idea.title.length <= 80 &&
+          Object.hasOwn(breakfastKinds, idea.kind) && idea.visibility === 'shared' &&
+          timestamp(idea.createdAt) &&
+          (!idea.stickerAuthor || cleanStickerAuthor(idea.stickerAuthor)),
+        '早餐点子',
+      )
+    }
+    requireValue(
+      breakfast.choice == null ||
+        (object(breakfast.choice) && nonempty(breakfast.choice.id) && date(breakfast.choice.day)),
+      '早餐印章',
+    )
+  }
   checkPreferences(data.preferences)
-  return { records: data.records.length, plans: data.plans.length, archived }
+  return {
+    records: data.records.length, plans: data.plans.length, archived,
+    ...(data.breakfast ? { breakfastIdeas: data.breakfast.ideas.length } : {}),
+  }
 }
 export async function exportBackup() {
-  let planSnapshot, places, historySnapshot
+  let planSnapshot, places, historySnapshot, breakfastSnapshot
   const preferences = {}
   // Capture lightweight settings and plans alongside the records snapshot, before encoding media.
   const records = await exportRecords((tx) => {
+    breakfastSnapshot = readBreakfast(tx)
     historySnapshot = readMealHistory(tx)
     planSnapshot = exportPlanSnapshot(tx)
     places = tx
@@ -262,6 +294,7 @@ export async function exportBackup() {
     records,
     ...(await planSnapshot),
     places: await places,
+    breakfast: await breakfastSnapshot,
     preferences,
   }
   validateBackup(backup)
@@ -297,6 +330,7 @@ export async function importBackup(data) {
     plans: data.plans,
     generation: data.generation,
     mealHistory: data.preferences.mealHistory,
+    ...(data.breakfast ? { breakfast: data.breakfast } : {}),
     places: data.places?.map(normalizePlace),
   }
   await replaceRecords(data.records, () => replaceLocal(data), notebook)

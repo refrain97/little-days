@@ -1,0 +1,458 @@
+.bf-period,
+.bf-filters,
+.bf-actions,
+.bf-list-heading,
+.lc-mode-strip {
+  display: flex;
+  align-items: center;
+}
+.bf-period {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  margin: 0 0 18px;
+  background: #f1e7d5;
+  border: 1.5px solid #9e8166;
+  border-radius: 22px;
+}
+.bf-period button,
+.bf-draw,
+.bf-add,
+.bf-actions button,
+.bf-accept,
+.bf-chip,
+.bf-stamp,
+.breakfast-tag span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--cocoa, #594332);
+  line-height: 1.35;
+  font-weight: 650;
+}
+.bf-period button {
+  min-height: 38px;
+  padding: 5px 16px;
+  border: 1.5px solid transparent;
+  border-radius: 18px;
+  font-size: 14px;
+}
+.bf-period button[aria-pressed='true'] {
+  background: #fff8e5;
+  border-color: #795b42;
+  box-shadow: 1.5px 2px 0 #bc9b77;
+}
+.bf-pool {
+  margin-bottom: 28px;
+}
+.bf-pool h2,
+.bf-form-wrap h2,
+.bf-slip h2 {
+  margin: 0;
+  color: var(--cocoa, #594332);
+}
+.bf-cover {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 170px;
+  display: flex;
+  align-items: center;
+  border: 1.8px solid #795b42;
+  border-radius: 24px 27px 22px 26px / 26px 21px 27px 23px;
+  box-shadow: 3px 4px 0 #c8af87;
+  color: var(--cocoa, #594332);
+  background-color: #f8e8b3;
+  background-image: radial-gradient(#bd9b594d 0.85px, transparent 0.95px);
+  background-size: 9px 9px;
+}
+.bf-cover-text {
+  position: relative;
+  padding: 24px clamp(17px, 4vw, 32px);
+}
+.bf-cover h2 {
+  font-size: clamp(22px, 2.5vw, 33px);
+  margin-bottom: 13px;
+}
+.bf-toast-art {
+  position: absolute;
+  width: clamp(140px, 35%, 220px);
+  height: 100%;
+  inset: 0 4% 0 auto;
+  z-index: -1;
+}
+.bf-draw,
+.bf-accept,
+.bf-actions button,
+.bf-add {
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1.5px solid #78573f;
+  border-radius: 15px;
+  background: #fff8ea;
+  box-shadow: 1.5px 2px 0 #bf9d79;
+  font-size: 14px;
+}
+.bf-draw,
+.bf-accept,
+.bf-actions .bf-accept {
+  background: #f3bdb0;
+}
+.bf-decision {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 15px 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.bf-stamp {
+  flex: none;
+  color: #7a543a;
+  padding: 3px 7px;
+  border: 3px double #947448;
+  border-radius: 6px;
+  background: #faebba;
+  font-size: 13px;
+  transform: rotate(-3deg);
+}
+.bf-filters {
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 18px 0 23px;
+}
+.bf-chip {
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1.5px solid #a18a72;
+  border-radius: 16px;
+}
+.bf-chip[aria-pressed='true'],
+.bf-form-kinds .bf-chip:has(:checked) {
+  border-color: #62442e;
+  box-shadow: 1px 2px 0 #927355;
+}
+.bf-quick {
+  background: #f8e7b7;
+}
+.bf-slow {
+  background: #f5d0c4;
+}
+.bf-buy {
+  background: #dfeaca;
+}
+.bf-list-heading {
+  gap: 8px;
+  margin-bottom: 11px;
+}
+.bf-list-heading h2 {
+  font-size: 20px;
+}
+.bf-list-heading > span {
+  font-size: 12px;
+  color: #816a55;
+}
+.bf-add {
+  min-height: 34px;
+  padding: 5px 10px;
+  margin-left: auto;
+  font-size: 12px;
+}
+.bf-list {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bf-list li {
+  min-width: 0;
+}
+.bf-list button {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  color: var(--cocoa, #594332);
+  background: #fffaf0;
+  border: 1.5px solid #a18972;
+  border-radius: 14px;
+  box-shadow: 1.5px 2px 0 #e0cdb1;
+}
+.bf-mini {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid #b19a7f;
+}
+.bf-mini img,
+.bf-slip-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.bf-item-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.bf-item-copy small {
+  font-size: 11px;
+  color: #806955;
+}
+.bf-list .author-mark {
+  position: static;
+}
+.bf-slip,
+.bf-form-wrap {
+  position: relative;
+  padding: 27px;
+  background: #fff8df;
+  color: var(--cocoa, #594332);
+}
+.bf-slip {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent,
+      transparent 26px,
+      #d7bd8738 26px,
+      #d7bd8738 27px
+    ),
+    #fff4c8;
+}
+.bf-slip h2,
+.bf-form-wrap h2 {
+  font-size: 23px;
+  overflow-wrap: anywhere;
+}
+.bf-slip h2 {
+  margin: 11px 0 14px;
+}
+.bf-slip-photo {
+  position: relative;
+  max-width: 320px;
+  height: clamp(95px, 22vh, 180px);
+  background: #ebdfc3;
+  border: 5px solid #fffaf0;
+  box-shadow: 1px 2px 0 #c4aa89;
+}
+.bf-slip-photo::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 34%;
+  width: 31%;
+  height: 14px;
+  background: #d2deaeed;
+  clip-path: polygon(
+    2% 0,
+    100% 0,
+    98% 27%,
+    100% 49%,
+    97% 78%,
+    100% 100%,
+    0 100%,
+    3% 68%,
+    0 42%
+  );
+  transform: rotate(-3deg);
+}
+.bf-quote {
+  font-size: 15px;
+  line-height: 1.7;
+  margin: 13px 0 0;
+  overflow-wrap: anywhere;
+}
+.bf-actions {
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+  min-height: 40px;
+}
+.bf-actions button:disabled {
+  opacity: 0.55;
+}
+.bf-form-wrap form {
+  margin-top: 16px;
+}
+.bf-name,
+.bf-form-kinds legend {
+  font-size: 13px;
+  font-weight: 650;
+}
+.bf-name {
+  display: grid;
+  gap: 5px;
+}
+.bf-name input,
+.breakfast-kind-field select {
+  color: var(--cocoa, #594332);
+  font: inherit;
+  font-size: 16px;
+  border: 1.5px solid #ac9174;
+  border-radius: 12px;
+  background: #fffdf5;
+  padding: 9px;
+}
+.bf-form-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  margin: 13px 0 20px;
+}
+.bf-form-kinds legend {
+  margin-bottom: 6px;
+  padding: 0;
+}
+.bf-form-kinds .bf-chip {
+  position: relative;
+  cursor: pointer;
+}
+.bf-form-kinds .bf-chip span,
+.breakfast-tag span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.bf-form-kinds input,
+.breakfast-tag input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.bf-form-kinds label:has(:focus-visible),
+.breakfast-tag:has(:focus-visible) {
+  outline: 2px solid #86603d;
+  outline-offset: 2px;
+}
+.bf-error {
+  color: #954e37;
+  font-size: 13px;
+}
+.lc-mode-strip {
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: 8px 0 16px;
+}
+.lc-mode-strip .lc-modes {
+  margin: 0;
+}
+.breakfast-tag {
+  position: relative;
+  display: inline-flex;
+  border-radius: 15px;
+}
+.breakfast-tag span {
+  padding: 4px 9px;
+  color: #80694e;
+  border-radius: inherit;
+  border: 1px dashed #ab9070;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.breakfast-tag:has(:checked) span {
+  border: 1.5px solid #805e37;
+  background: #f7e4aa;
+  color: #61482e;
+}
+.breakfast-kind-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.breakfast-kind-field[hidden] {
+  display: none;
+}
+.breakfast-kind-field select {
+  padding: 4px 8px;
+}
+@media (max-width: 600px) {
+  .bf-cover {
+    min-height: 141px;
+  }
+  .bf-toast-art {
+    right: 0;
+    width: 42%;
+  }
+  .bf-cover-text {
+    padding: 14px 16px;
+  }
+  .bf-period button {
+    min-height: 34px;
+    padding: 5px 13px;
+  }
+  .bf-draw {
+    padding: 7px 11px;
+  }
+  .bf-filters {
+    gap: 5px;
+    margin-bottom: 20px;
+  }
+  .bf-chip {
+    gap: 3px;
+    font-size: 12px;
+    padding: 7px 8px;
+  }
+  .bf-list {
+    grid-template-columns: 1fr;
+  }
+  .bf-slip,
+  .bf-form-wrap {
+    padding: 23px 19px;
+  }
+}
+.bf-slip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding-right: 30px;
+}
+.bf-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px dashed #b49a70;
+  background: #fff9e5;
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bf-draw:active .icon {
+    transform: rotate(-17deg) scale(0.94);
+  }
+  .bf-slip .bf-stamp {
+    animation: breakfast-stamp-in 0.24s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+  }
+  @keyframes breakfast-stamp-in {
+    from {
+      opacity: 0.25;
+      transform: translateY(-4px) rotate(-8deg) scale(1.17);
+    }
+    to {
+      opacity: 1;
+      transform: rotate(-3deg);
+    }
+  }
+}

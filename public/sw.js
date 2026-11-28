@@ -6,6 +6,10 @@ const indexURL = new URL('index.html', scope).href
 const assets = new Map(
   files.map(([name, digest]) => [new URL(name, scope).href, digest]),
 )
+const fontURLs = new Set(
+  [...assets.keys()].filter((url) => url.endsWith('.woff2')),
+)
+const fontRequests = new Map()
 let connection
 
 function database() {
@@ -82,13 +86,16 @@ self.addEventListener('install', (event) => {
         get.onerror = () => reject(get.error)
       })
       const entries = await Promise.all(
-        [...assets].map(([url, digest]) =>
-          fetchReleaseAsset(url, digest, prior),
-        ),
+        [...assets].map(async ([url, digest]) => {
+          if (!fontURLs.has(url)) return fetchReleaseAsset(url, digest, prior)
+          // Keep previously used glyph ranges, but don't download unused ranges during installation.
+          const cached = prior && (await cachedAsset(url, prior))
+          return cached?.digest === digest ? { url, ...cached } : null
+        }),
       )
       const tx = db.transaction('assets', 'readwrite')
       const complete = finished(tx)
-      for (const { url, ...entry } of entries)
+      for (const { url, ...entry } of entries.filter(Boolean))
         tx.objectStore('assets').put(entry, [revision, url])
       await complete
       await self.skipWaiting()
@@ -136,13 +143,41 @@ async function cachedAsset(url, version = revision) {
   })
 }
 
+function loadFont(url) {
+  if (!fontRequests.has(url)) {
+    const request = (async () => {
+      const cached = await cachedAsset(url)
+      if (cached) return cached
+      const { url: key, ...font } = await fetchReleaseAsset(
+        url,
+        assets.get(url),
+      )
+      const db = await database()
+      const tx = db.transaction('assets', 'readwrite')
+      const complete = finished(tx)
+      tx.objectStore('assets').put(font, [revision, key])
+      await complete
+      return font
+    })().finally(() => fontRequests.delete(url))
+    fontRequests.set(url, request)
+  }
+  return fontRequests.get(url)
+}
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type !== 'used-fonts' || !Array.isArray(event.data.urls))
+    return
+  const known = [...fontURLs].filter((url) => event.data.urls.includes(url))
+  event.waitUntil(Promise.allSettled(known.map(loadFont)))
+})
+
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (
     request.method !== 'GET' ||
     request.headers.has('authorization') ||
     request.headers.has('x-api-key') ||
-    request.headers.has('range')
+    (request.headers.has('range') && !fontURLs.has(request.url))
   )
     return
   const url = new URL(request.url)
@@ -152,7 +187,9 @@ self.addEventListener('fetch', (event) => {
   if (!assets.has(key)) return
   event.respondWith(
     (async () => {
-      const entry = await cachedAsset(key).catch(() => null)
+      const entry = await (
+        fontURLs.has(key) ? loadFont(key) : cachedAsset(key)
+      ).catch(() => null)
       return entry
         ? new Response(entry.bytes, { headers: entry.headers })
         : fetch(request)

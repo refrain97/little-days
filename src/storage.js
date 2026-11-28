@@ -1,4 +1,6 @@
-import { readProfile } from './cloud-profile.js'
+import { restoreBreakfast } from './breakfast-model.js'
+import { cleanReactions, stamps } from './stickers.js'
+import { readProfile, stickerActor } from './cloud-profile.js'
 import { prepareJournalPhoto, makeJournalThumbnail } from './device-ai.js'
 import {
   createEntry,
@@ -62,6 +64,11 @@ export function localAuthor(previous) {
   return authorship({
     author: previous?.author || actor,
     updatedBy: actor || previous?.updatedBy,
+    stickerAuthor:
+      previous?.stickerAuthor ||
+      (!previous?.author || previous.author.nickname === actor?.nickname
+        ? stickerActor()
+        : undefined),
   })
 }
 export function isSharedMutation(event) {
@@ -728,7 +735,12 @@ export async function putRecord(fields, original) {
       ...Object.keys(before),
       ...Object.keys(draft),
     ])) {
-      if (['id', 'author', 'updatedBy'].includes(key)) continue
+      if (
+        ['id', 'author', 'updatedBy', 'stickerAuthor', 'reactions'].includes(
+          key,
+        )
+      )
+        continue
       const a = before[key],
         b = draft[key]
       if (
@@ -819,6 +831,39 @@ export async function removeRecord(id) {
   await transactionDone(tx)
   announceMutation(tx)
 }
+export async function toggleStamp(id, stamp) {
+  if (!Object.hasOwn(stamps, stamp)) throw new Error('这枚贴纸暂不可用。')
+  const actor = stickerActor()
+  const db = await journalDatabase()
+  const tx = db.transaction('records', 'readwrite')
+  const table = tx.objectStore('records')
+  let saved
+  const req = table.get(id)
+  req.onsuccess = () => {
+    const row = req.result
+    if (row?.visibility !== 'shared') return
+    const reactions = cleanReactions(row.reactions)
+    const current = reactions.find((reaction) => reaction.actor.id === actor.id)
+    const next = {
+      actor,
+      stamp: current?.stamp === stamp ? null : stamp,
+      at: new Date().toISOString(),
+    }
+    saved = {
+      ...row,
+      reactions: [
+        ...reactions.filter((reaction) => reaction.actor.id !== actor.id),
+        next,
+      ],
+    }
+    table.put(saved)
+  }
+  await transactionDone(tx)
+  if (!saved) throw new Error('这篇手记已移除或改为仅自己。')
+  announce('local-only')
+  return createEntry(saved)
+}
+
 export async function toggleRecordFavorite(id) {
   const db = await journalDatabase()
   let updated
@@ -883,6 +928,7 @@ export async function replaceRecords(rows, applyLocal, notebook) {
         for (const plan of notebook.plans) plans.put(plan)
         for (const place of notebook.places || []) places.put(place)
         settings.put(notebook.generation, 'plan-generation')
+        if (notebook.breakfast) restoreBreakfast(settings, notebook.breakfast)
         if (Object.hasOwn(notebook, 'mealHistory')) {
           if (notebook.mealHistory === undefined)
             settings.delete(mealHistoryKey)
@@ -1282,14 +1328,40 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
       )
         return
       if (kind === 'entries' && value) {
-        const next = createEntry(value)
+        const previous = current.result
+        const next = createEntry({
+          ...value,
+          stickerAuthor: previous?.stickerAuthor,
+          reactions: previous?.reactions,
+          isBreakfast: previous?.isBreakfast,
+          breakfastKind: previous?.breakfastKind,
+        })
         if (paths.keepPhoto && current.result?.image)
           next.image = current.result.image
         if (paths.keepAudio && current.result?.audio)
           next.audio = current.result.audio
         writeSplit(storesFor(tx), next, current.result, paths)
-      } else if (value) table.put(value)
-      else {
+      } else if (value) {
+        const previous = current.result
+        const next = { ...value }
+        if (previous?.stickerAuthor) next.stickerAuthor = previous.stickerAuthor
+        if (kind === 'freetime') {
+          for (const key of ['completions', 'reopened']) {
+            const authors = new Map(
+              (previous?.[key] || []).map((row) => [
+                row.key,
+                row.stickerAuthor,
+              ]),
+            )
+            next[key] = (next[key] || []).map((row) =>
+              authors.get(row.key)
+                ? { ...row, stickerAuthor: authors.get(row.key) }
+                : row,
+            )
+          }
+        }
+        table.put(next)
+      } else {
         if (kind === 'entries')
           for (const key of kinds)
             deleteMedia(tx.objectStore('media'), current.result?.[key], key)

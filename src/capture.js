@@ -1,3 +1,5 @@
+import { icon as stickerIcon } from './icons.js'
+import { breakfastKinds } from './breakfast-model.js'
 import { showEditor, usesMobileShell } from './dialog-viewport.js'
 import {
   getAISettings,
@@ -17,41 +19,8 @@ import {
   venueKey,
 } from './journal.js'
 
-const symbols = {
-  close: '<path d="m6 6 12 12M18 6 6 18"/>',
-  pen: '<path d="m4 16-.7 4.7L8 20 19.5 8.5l-4-4Z"/><path d="m13.5 6.5 4 4"/>',
-  camera:
-    '<path d="M3 7.5h4l1.8-3h6.4l1.8 3h4v12H3z"/><circle cx="12" cy="13" r="3.2"/>',
-  mic: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3m-3 0h6"/>',
-  photo:
-    '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m4 18 5-5 3 3 3.5-4 4.5 5"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  check: '<path d="m4 12 5 5L20 6"/>',
-  arrow: '<path d="m7 10 5 5 5-5"/>',
-  star: '<path d="m12 2.7 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3-5.7-3-5.7 3 1.1-6.3L2.8 9.4l6.4-.9z"/>',
-  sparkle:
-    '<path d="m10 3 1.9 5.6L17.5 11l-5.6 2.2L10 19l-2-5.8L2.5 11 8 8.6ZM18.7 2v5.4M16 4.7h5.4"/>',
-  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
-  cal: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 10h18"/>',
-  together:
-    '<circle cx="8" cy="8" r="2.8"/><path d="M3 18v-1a5 5 0 0 1 10 0v1M15 5.4a2.7 2.7 0 1 1 0 5.2M16 13a4.7 4.7 0 0 1 5 4.8"/>',
-  lock: '<rect x="5" y="10" width="14" height="10" rx="2.4"/><path d="M8 10V7a4 4 0 1 1 8 0v3M12 14v2"/>',
-  glad: '<circle cx="12" cy="12" r="9"/><path d="M8.3 13.7a4.1 4.1 0 0 0 7.4 0M8.4 9h.1m6.9 0h.1"/>',
-  okay: '<circle cx="12" cy="12" r="9"/><path d="M8.8 14.5h6.4M8.4 9h.1m6.9 0h.1"/>',
-  nope: '<circle cx="12" cy="12" r="9"/><path d="M8.8 16a3.8 3.8 0 0 1 6.4 0M8.4 9h.1m6.9 0h.1"/>',
-}
-
-function icon(name, size = 18) {
-  return (
-    '<svg aria-hidden="true" width="' +
-    size +
-    '" height="' +
-    size +
-    '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
-    symbols[name] +
-    '</svg>'
-  )
-}
+const captureSymbols = { close: 'x', photo: 'memory', arrow: 'down', cal: 'calendar' }
+const icon = (name, size = 18) => stickerIcon(captureSymbols[name] || name, size)
 
 const diningCategories = ['美食', '饮品']
 const attitudes = {
@@ -87,9 +56,9 @@ export function openCapture({
       </header>
       <div class="lc-scroll">
         <label class="lc-field lc-content"><span data-text-label>我的原话</span><textarea data-body rows="3" placeholder="记下此刻想说的话…"></textarea></label>
-        <div class="lc-modes" role="group" aria-label="记录方式">
+        <div class="lc-mode-strip"><div class="lc-modes" role="group" aria-label="记录方式">
           <button type="button" data-mode="text">${icon('pen')}文字</button><button type="button" data-mode="photo">${icon('camera')}照片</button><button type="button" data-mode="voice">${icon('mic')}语音</button>
-        </div>
+        </div><label class="breakfast-tag"><input type="checkbox" data-breakfast-tag><span>${icon('sun', 16)}早餐</span></label></div>
         <div class="lc-photo-tools" hidden>
           <button type="button" data-pick-photo>${icon('photo', 23)}<span>从相册选择</span></button>
           <button type="button" data-take-photo>${icon('camera', 23)}<span>拍一张</span></button>
@@ -113,6 +82,7 @@ export function openCapture({
           <div class="lc-dining" role="group" aria-label="饮食来源"><button type="button" data-dining="home">自己做</button><button type="button" data-dining="out">出去吃</button></div>
         </div>
         <div class="lc-venue" hidden><label class="lc-field"><span>店名 <small>选填</small></span><input data-venue type="text" autocomplete="off" placeholder="这次去了哪家店？"></label><div class="lc-venue-picks" role="group" aria-label="去过的店" hidden></div></div>
+        <label class="breakfast-kind-field" hidden><span class="lc-label">早餐做法</span><select data-breakfast-kind><option value="">自动归类</option>${Object.entries(breakfastKinds).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
         <div class="lc-row"><span class="lc-label">星级</span><div class="lc-rating" role="group" aria-label="为这条手记评分"></div><button type="button" class="lc-text-btn" data-clear-rating hidden>清除评分</button></div>
           <label class="lc-field"><span>标题</span><input type="text" data-title maxlength="100" placeholder="根据内容自动生成"></label>
           <label class="lc-field"><span>备注</span><textarea data-notes rows="2" placeholder="还有什么想记住的？"></textarea></label>
@@ -125,6 +95,15 @@ export function openCapture({
   const all = (selector) => Array.from(dialog.querySelectorAll(selector))
   const editor = $('[data-body]')
   const title = $('[data-title]')
+  const breakfastTag = $('[data-breakfast-tag]')
+  breakfastTag.checked = record?.isBreakfast === true
+  const breakfastType = $('[data-breakfast-kind]')
+  breakfastType.value = record?.breakfastKind || ''
+  const updateBreakfast = () => {
+    $('.breakfast-kind-field').hidden = !breakfastTag.checked
+  }
+  breakfastTag.addEventListener('change', updateBreakfast)
+  updateBreakfast()
   const notes = $('[data-notes]')
   const venueInput = $('[data-venue]')
   const venueHistory = [
@@ -1100,6 +1079,8 @@ export function openCapture({
               : notes.value.trim().slice(0, 22)),
         category,
         text,
+        isBreakfast: breakfastTag.checked,
+        breakfastKind: breakfastType.value,
         photoDescription: photoText,
         originalTextUnverified: Boolean(
           unverifiedOriginal && text === (record?.text || '').trim(),

@@ -1,3 +1,6 @@
+import { cleanStickerAuthor, cleanReactions } from './stickers.js'
+
+import { breakfastFields } from './breakfast-model.js'
 export const CATEGORIES = ['美食', '饮品', '灵感', '回忆']
 
 const tastes = ['', '好吃', '一般', '不合口味']
@@ -528,7 +531,12 @@ export function publicAuthor(value) {
 export function authorship(value) {
   const author = publicAuthor(value?.author),
     updatedBy = publicAuthor(value?.updatedBy)
-  return { ...(author ? { author } : {}), ...(updatedBy ? { updatedBy } : {}) }
+  const stickerAuthor = cleanStickerAuthor(value?.stickerAuthor)
+  return {
+    ...(author ? { author } : {}),
+    ...(updatedBy ? { updatedBy } : {}),
+    ...(stickerAuthor ? { stickerAuthor } : {}),
+  }
 }
 
 export function createEntry(fields = {}) {
@@ -573,6 +581,10 @@ export function createEntry(fields = {}) {
     id: String(fields.id || makeId()),
     isSample: sample,
     ...authorship(fields),
+    ...(fields.visibility !== 'private' && fields.reactions?.length
+      ? { reactions: cleanReactions(fields.reactions) }
+      : {}),
+    ...breakfastFields(fields),
     visibility: fields.visibility === 'private' ? 'private' : 'shared',
     photoDescription: String(fields.photoDescription || '').trim(),
     ...((fields.originalTextUnverified ?? legacyPhoto)
@@ -677,6 +689,8 @@ export const SEED_ENTRIES = [
   {
     id: 'sample-breakfast',
     title: '周末的早餐吐司',
+    isBreakfast: true,
+    breakfastKind: 'quick',
     category: '美食',
     diningSource: 'home',
     createdAt: daysAgo(6, 9, 15),

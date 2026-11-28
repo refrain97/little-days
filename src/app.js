@@ -1,3 +1,5 @@
+import { createBreakfastView } from './breakfast.js'
+import { breakfastPeriod } from './breakfast-model.js'
 import { fitDialogViewport, usesMobileShell } from './dialog-viewport.js'
 import {
   CATEGORIES,
@@ -28,7 +30,15 @@ import {
 import { photoAttributes, observeGallery } from './gallery.js'
 import { registerOfflineShell } from './offline-shell.js'
 import { bundledPhotoPath } from './paths.js'
-import { authorBadge } from './cloud-profile.js'
+import { authorBadge, chooseAnimal, stickerActor } from './cloud-profile.js'
+import {
+  animals,
+  animalIcon,
+  stamps,
+  stampButtons,
+  cleanReactions,
+} from './stickers.js'
+import { toggleStamp } from './storage.js'
 import { createCloudAdapter, onCloudLocalChange } from './cloud-local.js'
 import { createGitHubSync } from './github-sync.js'
 import {
@@ -42,8 +52,9 @@ import {
   refreshPrivateBackupStatus,
 } from './backup-ui.js'
 import { privateBackupStatus } from './backup.js'
-import { icon, flower, flourish, kitchenSketch } from './icons.js'
+import { icon, flower, flourish, kitchenSketch, notebookCat } from './icons.js'
 import { openCapture, attitudeLabel } from './capture.js'
+import { openQuickVoice } from './voice-quick.js'
 import {
   readPlans,
   putPlan,
@@ -92,6 +103,8 @@ const html = (value) =>
   )
 const action = (name, value = '') =>
   'data-action="' + name + '" data-value="' + html(value) + '"'
+const quickVoiceButton = () =>
+  `<button type="button" class="quick-voice-button" ${action('quick-voice')} aria-label="语音速记" title="语音速记">${icon('mic', 23)}</button>`
 const getPreference = (key, fallback) => {
   try {
     return JSON.parse(localStorage.getItem('little.days.' + key)) ?? fallback
@@ -131,11 +144,7 @@ function relativeDate(input) {
   now.setDate(now.getDate() - 1)
   return dayKey(input) === dayKey(now) ? '昨天' : localDate(input)
 }
-function mealNow() {
-  const hour = new Date().getHours()
-  return hour >= 4 && hour < 11 ? '早餐' : '晚餐'
-}
-let meal = mealNow()
+const meal = '晚餐'
 let mealHistory = []
 let entries = [],
   section = 'home',
@@ -161,6 +170,14 @@ let activeDetail = '',
   toastTimer
 const app = document.querySelector('#app'),
   overlay = document.querySelector('#overlay')
+const breakfast = createBreakfastView({
+  entries: () => pool(),
+  overlay,
+  open: lockOverlay,
+  close: closeOverlay,
+  render,
+  toast,
+})
 let lastSyncNotice = ''
 const cloud = createGitHubSync({
   adapter: createCloudAdapter(),
@@ -351,7 +368,7 @@ function sidebar() {
     '<button class="personal" ' +
     action('settings') +
     '><span class="avatar">' +
-    icon('sprout', 21) +
+    animalIcon(stickerActor().animal, 33) +
     '</span><span><b>我的小天地</b><small>本机手记本</small></span>' +
     icon('settings', 17) +
     '</button></div></aside>'
@@ -382,10 +399,12 @@ function heading() {
     add = action('start-plan', 'wish')
     label = '记个想做'
   }
-  return `<header class="page-header">
+  return `<header class="page-header cover-header">
+    ${notebookCat}
     <div><div class="today">${icon('calendar', 15)}<time>${date}</time><i></i>${weekday}</div>
       <h1>${title}${flourish}</h1></div>
     <div class="header-actions">
+      ${quickVoiceButton()}
       <button class="new-entry" ${add}>${icon('plus', 19)}${label}</button>
     </div></header>`
 }
@@ -504,14 +523,13 @@ function card(entry, eager = false) {
     time(entry.createdAt) +
     '</div><h3>' +
     html(entry.title) +
-    '</h3><p>' +
-    html(
-      entry.text ||
-        entry.feeling ||
-        entry.notes ||
-        (entry.audio ? '听听这一刻的声音' : '查看这篇手记'),
-    ) +
-    '</p><div class="card-rating">' +
+    '</h3>' +
+    (!entry.image && excerpt
+      ? ''
+      : '<p>' +
+        html(excerpt || (entry.audio ? '听听这一刻的声音' : '查看这篇手记')) +
+        '</p>') +
+    '<div class="card-rating">' +
     (entry.rating
       ? icon('star', 15) + '<b>' + entry.rating.toFixed(1) + '</b>'
       : '') +
@@ -530,7 +548,9 @@ function card(entry, eager = false) {
     entry.favorite +
     '">' +
     icon('heart', 16) +
-    '</button></article>'
+    '</button>' +
+    stampButtons(entry, stickerActor(), icon) +
+    '</article>'
   )
 }
 function filters() {
@@ -632,7 +652,9 @@ function cardArea() {
               year: 'numeric',
             }) +
             '</small></h3><div class="entry-grid list">' +
-            group.map((entry, i) => card(entry, groupIndex === 0 && i < 2)).join('') +
+            group
+              .map((entry, i) => card(entry, groupIndex === 0 && i < 2))
+              .join('') +
             '</div></section>',
         )
         .join('') +
@@ -665,20 +687,7 @@ function kitchen() {
   const places = venues()
   const known = recommendEntries(pool(), { limit: Infinity })
   const mode = diningMode()
-  return `${allowPicks ? hero(mode) : `<button class="add-visit" ${action('enable-picks')}>${icon('sparkle', 16)}展开饮食推荐</button>`}
-    ${
-      allowPicks && mode === 'home'
-        ? `<div class="meal-tabs meal-purpose" role="group" aria-label="推荐时段">${[
-            '早餐',
-            '晚餐',
-          ]
-            .map(
-              (v) =>
-                `<button ${action('meal', v)} class="filter ${meal === v ? 'chosen' : ''}" aria-pressed="${meal === v}">${v}</button>`,
-            )
-            .join('')}</div>`
-        : ''
-    }
+  return `${breakfast.periodBar()}${breakfast.isBreakfast() ? breakfast.pool() : allowPicks ? hero(mode) : `<button class="add-visit" ${action('enable-picks')}>${icon('sparkle', 16)}展开饮食推荐</button>`}
     <section class="journal"><div class="journal-heading"><h2>我的店铺</h2><span class="entry-count">${places.length} 家</span>
       <button class="browse-venues" ${action('all-venues')}>全部店铺${icon('next', 13)}</button></div>
       <div class="kitchen-places">${places.length ? renderVenueCards(places.slice(0, 3)) : `<button class="add-visit" ${action('add-out')}>${icon('plus', 17)}记下第一家店</button>`}</div>
@@ -967,6 +976,7 @@ function render({ resetScroll = false } = {}) {
             })) +
     '</div></main><nav class="bottom-nav" aria-label="手机导航">' +
     navMarkup(true) +
+    quickVoiceButton() +
     '</nav>'
   updateSyncNotice(cloud.status())
   updateBackupReminder()
@@ -1001,7 +1011,7 @@ function moveTo(route) {
   query = ''
   findOpen = false
   suggestionIndex = 0
-  meal = mealNow()
+  if (section === 'kitchen') breakfast.resetPeriod()
   render({ resetScroll: true })
   if (!usesMobileShell()) window.scrollTo({ top: 0, behavior: 'instant' })
 }
@@ -1201,8 +1211,16 @@ function settings() {
       ' aria-label="关闭">' +
       icon('x', 19) +
       '</button><div class="settings-inner"><span class="avatar">' +
-      icon('sprout', 22) +
+      animalIcon(stickerActor().animal, 34) +
       '</span><h2>我的小天地</h2><p>「仅自己」保存在这台设备。连接云空间后，两个人都能查看和编辑「一起看」的内容。</p>' +
+      `<fieldset class="animal-picker"><legend>我的动物贴纸</legend><div>${Object.entries(
+        animals,
+      )
+        .map(
+          ([key, label]) =>
+            `<button type="button" ${action('pick-animal', key)} aria-pressed="${stickerActor().animal === key}">${animalIcon(key, 35)}${label}</button>`,
+        )
+        .join('')}</div></fieldset>` +
       row(
         'allowPicks',
         '吃点啥推荐卡',
@@ -1232,6 +1250,7 @@ async function refreshNotebook() {
     readPlans(),
     readPlaceProfiles(),
     readMealHistory(),
+    breakfast.reload(),
   ])
   ;[entries, plans, placeProfiles, mealHistory = []] = notebook
   storageError = ''
@@ -1291,7 +1310,62 @@ async function toggleFavorite(id) {
   render()
   toast(updated.favorite ? '已加入收藏' : '已移出收藏')
 }
+function chooseResponse(id) {
+  const entry = entries.find((row) => row.id === id)
+  if (entry?.visibility !== 'shared') return
+  const actor = stickerActor()
+  const applied = cleanReactions(entry.reactions).filter((row) => row.stamp)
+  const mine = applied.find((row) => row.actor.id === actor.id)
+  lockOverlay(
+    `<button class="close-sheet" ${action('close')} aria-label="关闭">${icon('x', 19)}</button>
+    <div class="stamp-sheet"><h2>盖个小回应</h2><p>${html(entry.title)}</p><div class="stamp-options">
+    ${Object.entries(stamps)
+      .map(
+        ([key, label]) =>
+          `<button data-act-stamp="${key}" data-note="${html(id)}" aria-pressed="${mine?.stamp === key}">${icon({ taste: 'heart', aroma: 'sparkle', chef: 'chef', visit: 'store' }[key], 20)}${label}</button>`,
+      )
+      .join('')}</div>
+    ${applied.length ? `<ul>${applied.map((row) => `<li>${animalIcon(row.actor.id === actor.id ? actor.animal : row.actor.animal, 24)} ${html(row.actor.name)} · ${stamps[row.stamp]}</li>`).join('')}</ul>` : ''}</div>`,
+    '盖个小回应',
+  )
+}
+
+async function respondToEntry(button) {
+  const { note, actStamp } = button.dataset
+  const inSheet = Boolean(button.closest('.stamp-sheet'))
+  button.disabled = true
+  try {
+    const saved = await toggleStamp(note, actStamp)
+    entries = entries.map((entry) => (entry.id === note ? saved : entry))
+    if (inSheet) closeOverlay()
+    render()
+    const replacement = [...app.querySelectorAll('.quick-stamp')].find(
+      (el) => el.dataset.note === note,
+    )
+    replacement?.focus({ preventScroll: true })
+  } finally {
+    button.disabled = false
+  }
+}
+
 async function handleAction(key, value) {
+  if (key.startsWith('breakfast-')) return breakfast.handle(key, value)
+  if (key === 'choose-stamp') return chooseResponse(value)
+  if (key === 'pick-animal') {
+    chooseAnimal(value)
+    render()
+    const picker = overlay.querySelector('.animal-picker')
+    for (const button of picker.querySelectorAll('button'))
+      button.setAttribute(
+        'aria-pressed',
+        String(button.dataset.value === value),
+      )
+    overlay.querySelector('.settings-inner > .avatar').innerHTML = animalIcon(
+      value,
+      34,
+    )
+    return
+  }
   if (key === 'retry-storage') {
     await refreshNotebook()
     return
@@ -1430,6 +1504,17 @@ async function handleAction(key, value) {
     startEntry({ mode: value })
     return
   }
+  if (key === 'quick-voice') {
+    openQuickVoice({
+      venues: venues().map((place) => place.name),
+      saveEntry: saveFromCapture,
+      savePlan: async (fields) => {
+        await putPlan(fields)
+        toast('已放进有空清单')
+      },
+    })
+    return
+  }
   if (key === 'edit' || key === 'cook') {
     const record =
       key === 'edit'
@@ -1463,12 +1548,6 @@ async function handleAction(key, value) {
   }
   if (key === 'shuffle') {
     suggestionIndex++
-    render()
-    return
-  }
-  if (key === 'meal') {
-    meal = value
-    suggestionIndex = 0
     render()
     return
   }
@@ -1520,6 +1599,11 @@ async function handleAction(key, value) {
 document.addEventListener('click', (event) => {
   if (event.target.classList.contains('overlay-bg')) {
     closeOverlay()
+    return
+  }
+  const stamp = event.target.closest('[data-act-stamp]')
+  if (stamp) {
+    respondToEntry(stamp).catch((e) => toast(e.message))
     return
   }
   const trigger = event.target.closest('[data-action]')
@@ -1604,6 +1688,7 @@ async function init() {
       readPlans(),
       readPlaceProfiles(),
       readMealHistory(),
+      breakfast.reload(),
     ])
     ;[entries, plans, placeProfiles, mealHistory = []] = notebook
   } catch (e) {
@@ -1629,14 +1714,13 @@ async function init() {
   setInterval(resume, 60000)
   cloud.start().catch((e) => paintSpaceStatus(overlay, cloud.status()))
 }
-let activeSlot = dayKey(new Date()) + mealNow()
+let activeSlot = dayKey(new Date()) + breakfastPeriod()
 function checkMealTime() {
-  const slot = dayKey(new Date()) + mealNow()
+  const slot = dayKey(new Date()) + breakfastPeriod()
   if (slot === activeSlot || document.visibilityState === 'hidden') return
   activeSlot = slot
   if (section === 'free') render()
   if (section === 'kitchen') {
-    meal = mealNow()
     suggestionIndex = 0
     render()
   }

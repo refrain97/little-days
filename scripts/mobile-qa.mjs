@@ -10,6 +10,7 @@ const viewport = { width: 390, height: 844 }
 const screenshots = resolve(
   process.env.MOBILE_QA_SCREENSHOTS || 'qa-screenshots',
 )
+let screenshotCount = 0
 const pass = (label) => console.log('✓ ' + label)
 const pages = [
   { id: 'home', tab: '手记', title: '生活手记' },
@@ -24,6 +25,12 @@ const stops = [
 ]
 
 async function screenshot(page, name, visibleOnly = false) {
+  await page.evaluate(async () => {
+    await document.fonts.ready
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    )
+  })
   const clip = visibleOnly
     ? await page.evaluate(() => ({
         x: visualViewport.offsetLeft,
@@ -33,6 +40,7 @@ async function screenshot(page, name, visibleOnly = false) {
       }))
     : undefined
   await page.screenshot({ path: resolve(screenshots, name + '.png'), clip })
+  screenshotCount++
 }
 
 function startPreview() {
@@ -351,6 +359,296 @@ async function checkDialog(page, spec) {
   )
 }
 
+async function checkStickers(page) {
+  await turnTo(page, 'home')
+  await page.locator('.mobile-settings').tap()
+  const picker = page.getByRole('group', { name: '我的动物贴纸' })
+  await picker.getByRole('button', { name: '小兔' }).tap()
+  assert.equal(
+    await picker
+      .getByRole('button', { name: '小兔' })
+      .getAttribute('aria-pressed'),
+    'true',
+  )
+  await screenshot(page, 'animal-picker')
+  await page.locator('.close-sheet').tap()
+  const id = await page.evaluate(async () => {
+    const entries = await (await import('./src/storage.js')).readRecords()
+    return entries.find((e) => !e.isSample && e.text === '周末买花').id
+  })
+  const card = page
+    .locator('.entry-card')
+    .filter({ has: page.locator(`.quick-stamp[data-note="${id}"]`) })
+  assert.equal(
+    await card.locator('.author-mark').getAttribute('data-animal'),
+    'rabbit',
+  )
+  await card.locator('.quick-stamp').tap()
+  assert.equal(
+    await card.locator('.quick-stamp').getAttribute('aria-pressed'),
+    'true',
+  )
+  await card.locator('.choose-stamp').tap()
+  const sheet = page.getByRole('dialog', { name: '盖个小回应' })
+  await screenshot(page, 'reaction-stickers')
+  await sheet.getByRole('button', { name: '厨神附体' }).tap()
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const applied = card.getByRole('button', { name: '厨神附体' })
+  assert.equal(await applied.getAttribute('aria-pressed'), 'true')
+  await applied.tap()
+  assert.equal(
+    await card.locator('.quick-stamp').getAttribute('aria-pressed'),
+    'false',
+  )
+  await page.evaluate(async (id) => {
+    const { createCloudAdapter } = await import('./src/cloud-local.js')
+    const { toggleStamp } = await import('./src/storage.js')
+    const adapter = createCloudAdapter()
+    const before = JSON.stringify(await adapter.snapshot())
+    const key = 'little.days.sticker-person'
+    const original = localStorage.getItem(key)
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 'qa-friend', name: '测试伙伴', animal: 'fox' }),
+      )
+      await toggleStamp(id, 'visit')
+    } finally {
+      localStorage.setItem(key, original)
+    }
+    const updated = await toggleStamp(id, 'aroma')
+    if (updated.reactions.filter((row) => row.stamp).length !== 2)
+      throw Error('两枚回应互相覆盖')
+    const after = JSON.stringify(await adapter.snapshot())
+    if (before !== after) throw Error('本机贴纸误改了共享队列或云端数据格式')
+  }, id)
+  pass('共享手记 · 动物头像 · 盖章、更换、刷新保留、再次点按撤回')
+}
+
+async function checkBreakfast(page) {
+  const activePeriod = page.locator(
+    '[data-action="breakfast-period"][aria-pressed="true"]',
+  )
+  await page.clock.setFixedTime(new Date('2026-11-28T10:29:00+08:00'))
+  await turnTo(page, 'kitchen')
+  assert.equal(await activePeriod.getAttribute('data-value'), 'breakfast')
+  await page.clock.setFixedTime(new Date('2026-11-28T10:30:00+08:00'))
+  await turnTo(page, 'home')
+  await turnTo(page, 'kitchen')
+  assert.equal(await activePeriod.getAttribute('data-value'), 'main')
+  await page
+    .locator('[data-action="breakfast-period"][data-value="breakfast"]')
+    .tap()
+  const pool = page.locator('[data-breakfast-pool]')
+  await pool.waitFor()
+  await screenshot(page, 'breakfast-pool')
+  await page.locator('[data-action="breakfast-add"]').tap()
+  const add = page.getByRole('dialog', { name: '塞个早餐点子' })
+  assert.equal(
+    await page.evaluate(() => document.activeElement.matches('input,textarea')),
+    false,
+  )
+  await add.locator('[name=title]').tap()
+  await keyboardViewport(page, true)
+  await add.locator('[name=title]').fill('芝麻豆浆杯')
+  await assertExposed(
+    add.locator('button[type=submit]'),
+    '填写早餐时的入池按钮',
+  )
+  await screenshot(page, 'breakfast-add', true)
+  await add.locator('[name=kind][value=quick]').check()
+  await add.locator('button[type=submit]').tap()
+  await add.waitFor({ state: 'hidden' })
+  await keyboardViewport(page, false)
+  await page
+    .locator('[data-action="breakfast-filter"][data-value="quick"]')
+    .tap()
+  await pool.getByText('芝麻豆浆杯', { exact: true }).first().waitFor()
+  await page.locator('[data-action="breakfast-draw"]').tap()
+  const draw = page.getByRole('dialog', { name: '早餐抽签' })
+  const confirm = draw.locator('[data-action="breakfast-accept"]')
+  await assertExposed(confirm, '就吃这个')
+  await screenshot(page, 'breakfast-draw')
+  const next = draw.locator('[data-action="breakfast-next"]')
+  const first = await draw.locator('h2').innerText()
+  assert(await next.isEnabled(), '快手筛选至少应有两个可选早餐')
+  await next.tap()
+  assert.notEqual(
+    await draw.locator('h2').innerText(),
+    first,
+    '换一张连续抽到相同早餐',
+  )
+  await confirm.tap()
+  await page.locator('[data-breakfast-stamp]').first().waitFor()
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  if ((await activePeriod.getAttribute('data-value')) !== 'breakfast')
+    await page
+      .locator('[data-action="breakfast-period"][data-value="breakfast"]')
+      .tap()
+  await page.locator('[data-breakfast-stamp]').first().waitFor()
+  await screenshot(page, 'breakfast-decided')
+  pass(
+    '早餐池 · 10:29 与 10:30 边界、手动切换、快手点子入池、抽签与今日盖章持久化',
+  )
+}
+
+async function checkVoice(page) {
+  await turnTo(page, 'home')
+  const open = page
+    .locator('[data-action="quick-voice"]')
+    .filter({ visible: true })
+    .first()
+  const dialog = page.locator('dialog.quick-voice[open]')
+  // Stand-ins run only in this isolated context. No system microphone, external API or OS prompt.
+  await page.evaluate(() => {
+    class ChineseRecognition {
+      start() {
+        window.qaSpeech = this
+        queueMicrotask(() => this.onstart?.())
+      }
+      stop() {
+        queueMicrotask(() => this.onend?.())
+      }
+      abort() {
+        this.stop()
+      }
+    }
+    ChineseRecognition.prototype.processLocally = false
+    for (const key of ['SpeechRecognition', 'webkitSpeechRecognition'])
+      Object.defineProperty(window, key, {
+        configurable: true,
+        value: ChineseRecognition,
+      })
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: async () => {
+        throw new DOMException('无麦克风权限', 'NotAllowedError')
+      },
+    })
+  })
+  await page.locator('#main').evaluate((main) => {
+    main.scrollTop = main.scrollHeight
+  })
+  await assertExposed(open, '滚到底仍可一键语音速记')
+  await open.tap()
+  await assertExposed(dialog.locator('[data-close]'), '关闭语音速记')
+  assert.equal(
+    await page.evaluate(() => document.activeElement.matches('input,textarea')),
+    false,
+  )
+  await screenshot(page, 'voice-listening')
+  await dialog.locator('[data-close]').tap()
+  await dialog.waitFor({ state: 'hidden' })
+  await open.tap()
+  await page.waitForFunction(() => window.qaSpeech?.lang === 'zh-CN')
+  await page.evaluate(() => {
+    window.qaSpeech.onresult({
+      results: [
+        { 0: { transcript: '找个晴天去河边野餐' }, isFinal: true, length: 1 },
+      ],
+      resultIndex: 0,
+    })
+  })
+  await dialog.locator('[data-primary]').tap()
+  await dialog.getByRole('button', { name: '存下来', exact: true }).waitFor()
+  assert.match(await dialog.locator('[data-destination]').innerText(), /有空/)
+  await screenshot(page, 'voice-confirm')
+  await dialog.locator('[data-primary]').tap()
+  await dialog.waitFor({ state: 'hidden' })
+  assert(
+    await page.evaluate(async () =>
+      (await (await import('./src/plans.js')).readPlans()).some((p) =>
+        p.title.includes('野餐'),
+      ),
+    ),
+  )
+  await page.evaluate(() => {
+    for (const key of ['SpeechRecognition', 'webkitSpeechRecognition'])
+      Object.defineProperty(window, key, {
+        configurable: true,
+        value: undefined,
+      })
+  })
+  await open.tap()
+  await dialog.locator('[data-type]').tap()
+  await dialog
+    .locator('[data-input]')
+    .fill('今天早餐在山间咖啡喝了拿铁，太好喝了，下次还要。')
+  await dialog.locator('[data-primary]').tap()
+  await dialog.getByRole('button', { name: '存下来', exact: true }).waitFor()
+  assert.match(await dialog.locator('[data-destination]').innerText(), /手记/)
+  await dialog.locator('[data-tune]').tap()
+  await assertExposed(dialog.locator('[data-primary]'), '微调后的存下来')
+  await screenshot(page, 'voice-edit')
+  await dialog.locator('[data-primary]').tap()
+  await dialog.waitFor({ state: 'hidden' })
+  const note = await page.evaluate(async () =>
+    (await (await import('./src/storage.js')).readRecords()).find((e) =>
+      e.text.includes('今天早餐在山间咖啡'),
+    ),
+  )
+  assert(
+    note?.isBreakfast &&
+      note.diningSource === 'out' &&
+      note.venueName.includes('山间'),
+  )
+  pass(
+    '语音速记 · 浮层打开与关闭、中文语音事件、待办分流、无权限文字输入、早餐探店手记保存',
+  )
+}
+
+async function checkDesktop(browser, base) {
+  const desktop = await browser.newContext({
+    viewport: { width: 1360, height: 900 },
+    locale: 'zh-CN',
+    serviceWorkers: 'block',
+  })
+  try {
+    const origin = new URL(base).origin
+    await desktop.route('**/*', (route) =>
+      new URL(route.request().url()).origin === origin
+        ? route.continue()
+        : route.abort(),
+    )
+    const page = await desktop.newPage()
+    await page.goto(base)
+    const nav = page.getByRole('navigation', { name: '主导航' })
+    await nav.getByRole('button', { name: '手记' }).waitFor()
+    await page
+      .locator('.entry-card [data-gallery-photo][data-ready]')
+      .first()
+      .waitFor()
+    const cleanCover = page.locator('.entry-card').filter({
+      has: page.getByRole('heading', { name: '把散步变成寻色游戏' }),
+    })
+    await cleanCover.waitFor()
+    assert.equal(
+      await cleanCover.locator('.card-body p').count(),
+      0,
+      '文字灵感卡片重复了封面文案',
+    )
+    const style = await page.locator('.sidebar').evaluate((node) => ({
+      width: document.documentElement.scrollWidth,
+      bgcolor: getComputedStyle(node).backgroundColor,
+    }))
+    assert(
+      style.width <= 1360 &&
+        !['rgb(72, 51, 69)', 'rgb(73, 50, 68)'].includes(style.bgcolor),
+      '桌面侧栏或正文样式未更新',
+    )
+    await screenshot(page, 'desktop-journal')
+    await nav.getByRole('button', { name: '吃点啥' }).click()
+    await page
+      .locator('[data-action="breakfast-period"][data-value="breakfast"]')
+      .click()
+    await page.locator('[data-breakfast-pool]').waitFor()
+    await screenshot(page, 'desktop-breakfast')
+    pass('桌面端 · 手记和早餐池可操作、文字卡无重复摘要、无横向溢出')
+  } finally {
+    await desktop.close()
+  }
+}
+
 async function run() {
   await mkdir(screenshots, { recursive: true })
   const { child, ready } = startPreview()
@@ -367,6 +665,7 @@ async function run() {
       deviceScaleFactor: 2,
       serviceWorkers: 'block',
       locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
     })
     const failures = []
     await context.route('**/*', (route) => {
@@ -399,6 +698,7 @@ async function run() {
       [390, 844, true],
       '手机视口或触屏参数错误',
     )
+    await page.clock.setFixedTime(new Date('2026-11-28T12:00:00+08:00'))
     await seedLocalWishes(page)
     for (const item of pages) {
       await turnTo(page, item.id)
@@ -423,8 +723,12 @@ async function run() {
       field: '[data-title]',
       save: '记下来',
     })
+    await checkStickers(page)
+    await checkBreakfast(page)
+    await checkVoice(page)
+    await checkDesktop(browser, base)
     assert.deepEqual(failures, [], '浏览器错误或意外网络请求')
-    pass('移动端验收全部通过 · 16 张截图 · ' + screenshots)
+    pass('移动端验收全部通过 · ' + screenshotCount + ' 张截图 · ' + screenshots)
   } finally {
     try {
       await browser?.close()

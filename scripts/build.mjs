@@ -17,6 +17,10 @@ const icons = [
 ]
 const publicAssets = [
   'manifest.json',
+  'fonts/OFL.txt',
+  ...['journal', 'breakfast', 'freetime', 'editor'].map(
+    (name) => 'fonts/days-' + name + '.woff2',
+  ),
   ...icons.map((name) => 'icons/' + name),
   ...demoPhotoNames.map((name) => 'images/' + name + '.webp'),
 ]

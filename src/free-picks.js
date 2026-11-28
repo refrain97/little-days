@@ -75,6 +75,7 @@ function planSuggestion(row, source) {
     row.setting === 'home' ? '居家' : row.setting === 'out' ? '外出' : ''
   return {
     author: row.author,
+    stickerAuthor: row.stickerAuthor,
     visibility: row.visibility,
     key: 'plan/' + (row.key || row.planId),
     title: row.title,
@@ -146,6 +147,7 @@ function personalMemories(
     if (excludedTitles.has(sameTitle(title))) continue
     memories.push({
       author: entry.author,
+      stickerAuthor: entry.stickerAuthor,
       visibility: entry.visibility,
       isSample: isSample(entry),
       identity,

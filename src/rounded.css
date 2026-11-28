@@ -1,0 +1,69 @@
+/* Resource Han Rounded CN Medium v0.990, by Cyano Hao and Adobe.
+   Source: https://github.com/CyanoHao/Resource-Han-Rounded/releases/tag/v0.990
+   Local WOFF2 subsets under the SIL OFL 1.1 (../fonts/OFL.txt). */
+@font-face {
+  font-family: 'Days Rounded';
+  src: url('../fonts/days-journal.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+  unicode-range:
+    U+4E00, U+4E09, U+4E0B, U+4E0E, U+4E2A, U+4E3B, U+4E8C, U+4E94, U+4EBA,
+    U+4ECA, U+504F, U+505A, U+5149, U+5168, U+516D, U+5199, U+51B0, U+51FA,
+    U+5206, U+523B, U+529E, U+5348, U+5361, U+53BB, U+53CC, U+53D8, U+53F8,
+    U+5403, U+540C, U+540E, U+5410, U+542C, U+5468, U+54C1, U+56DB, U+56DE,
+    U+5929, U+597D, U+5B50, U+5BFB, U+5C0F, U+5DF1-5DF2, U+5E74, U+5E97, U+5F52,
+    U+5F55, U+5F71, U+5F85, U+5FC6, U+60F3, U+610F, U+611F, U+620F-6211, U+624B,
+    U+628A, U+62CC, U+62E9, U+62FF, U+6392, U+63A5, U+6447, U+6536, U+6563,
+    U+65E5, U+65E9, U+65F6, U+661F, U+6708-6709, U+671F, U+672B-672C, U+673A,
+    U+6765, U+6811, U+6863, U+6B21, U+6B63-6B65, U+6C60, U+6C64, U+6CB9, U+6D3B,
+    U+6E38, U+6E90, U+6EE1, U+6F2B, U+7075, U+7092, U+7247, U+751F, U+756A,
+    U+7684, U+770B, U+7897, U+7A7A, U+7A97, U+7B14, U+7B5B, U+7C7B, U+7F6E,
+    U+7F8E, U+81EA, U+8272, U+8304, U+83DC, U+8471, U+85CF, U+86CB, U+8981,
+    U+8BA9, U+8BB0, U+8BBE, U+8BED, U+8BF4, U+8F74, U+8FB9, U+8FD9, U+8FDE,
+    U+9009, U+901F, U+90E8, U+91CD, U+94C1, U+94FA, U+95F4, U+9762, U+97F3,
+    U+98DF, U+9910, U+996E, U+9AA8;
+}
+@font-face {
+  font-family: 'Days Breakfast';
+  src: url('../fonts/days-breakfast.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+  unicode-range:
+    U+4E13, U+4E70, U+4EFD, U+51B3, U+5305, U+5386, U+53F2, U+559C, U+56E2,
+    U+5730, U+585E, U+58EB, U+5907, U+592A, U+5976, U+5B9A, U+5C5E, U+5F20,
+    U+5FEB, U+6162, U+6362, U+660E, U+6628, U+665A, U+6807, U+6CBB, U+6D46,
+    U+70B9, U+70E4, U+714E, U+71D5, U+74DC, U+76D6, U+7701, U+7AE0, U+7B7E,
+    U+7EA6, U+8017, U+829D, U+84B8, U+8549, U+8C46, U+8D2D, U+8DEF, U+9178,
+    U+949F, U+95E8, U+9633, U+967D, U+987A, U+987F, U+9884, U+9968, U+996D,
+    U+997C, U+9984, U+9999, U+9AB0, U+9E21, U+9EA6;
+}
+@font-face {
+  font-family: 'Days Freetime';
+  src: url('../fonts/days-freetime.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+  unicode-range:
+    U+4E66, U+4EF6, U+516C, U+51C6, U+5212, U+52A0-52A1, U+5355, U+56ED, U+57CE,
+    U+5B85, U+5B89, U+5B8C, U+5BB6, U+5F97, U+5FC3, U+5FF5, U+613F, U+6253,
+    U+6311, U+63D0, U+653E, U+65E0, U+6652, U+6761, U+690D, U+6C34, U+6CB3,
+    U+6D17, U+6D47, U+6DFB, U+6E05, U+7269, U+793C, U+795D, U+798F, U+7B97,
+    U+7EAA, U+7ECF, U+7ED9, U+7F18, U+8857, U+88AB, U+8BA1, U+901B, U+9192,
+    U+91CC, U+91CE, U+95F2, U+968F, U+978B, U+98CE;
+}
+@font-face {
+  font-family: 'Days Editor';
+  src: url('../fonts/days-editor.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+  unicode-range:
+    U+4E0D, U+4E5F, U+4E8B, U+4EC5, U+4F4F, U+4F53, U+4F5C, U+4FDD, U+4FEE,
+    U+505C, U+50CF, U+514B, U+5154, U+5165, U+5173, U+518C-518D, U+5220, U+52A8,
+    U+539F, U+53A8, U+53D6, U+53E3, U+5408, U+540D, U+5473, U+5728, U+5740,
+    U+589E, U+590D, U+5934, U+59CB, U+5B57-5B58, U+5BFC, U+5E26, U+5E94, U+5EA6,
+    U+5F00, U+5FAE, U+6001, U+6062, U+6309, U+6377, U+64CD, U+6539, U+6545,
+    U+6574, U+6587, U+65B0, U+6635, U+6743, U+675F, U+6B62, U+6C14, U+6D88,
+    U+7167, U+718A, U+72D0, U+72D7, U+72F8, U+732B, U+7406, U+7528, U+76D8,
+    U+76F8, U+786E, U+795E, U+79C1, U+79F0, U+7A3F, U+7ED3, U+7F16, U+8046,
+    U+8349, U+884C, U+8BA4, U+8BC4, U+8BDD, U+8BE6, U+8C03, U+8D77, U+8F7D,
+    U+8F91, U+8FD8, U+952E, U+95ED, U+9644, U+9650, U+9664;
+}

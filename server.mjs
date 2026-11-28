@@ -33,6 +33,8 @@ const mime = {
   '.json': 'application/manifest+json',
   '.webmanifest': 'application/manifest+json',
   '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
 }

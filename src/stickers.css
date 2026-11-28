@@ -1,0 +1,158 @@
+.animal-icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+  overflow: visible;
+}
+.animal-icon .fur {
+  fill: #e9a898;
+  stroke: none;
+}
+.author-mark[data-animal] {
+  border: 1px solid #bd9c7d;
+  width: 27px;
+  height: 25px;
+  padding: 0;
+  background: #fff8df;
+  box-shadow: 0 1px 0 #8e71553d;
+  transform: rotate(4deg);
+}
+.card-stamps {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 12px 9px;
+  color: #735242;
+  margin-top: auto;
+}
+.card-stamps button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: inherit;
+}
+.quick-stamp {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px dashed #bf9d85;
+  border-radius: 12px 9px 12px 8px;
+  background: #fff9ef;
+}
+.quick-stamp[aria-pressed='true'],
+.stamp-options button[aria-pressed='true'] {
+  background: #f6d4c9;
+  border-style: solid;
+  color: #714337;
+  box-shadow: 0 1px 0 #916c51;
+}
+.choose-stamp {
+  background: transparent;
+  font-weight: 700;
+  min-width: 30px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 9px;
+  font-size: 16px;
+}
+.choose-stamp span {
+  white-space: nowrap;
+  font-size: 11px;
+}
+.animal-picker {
+  padding: 14px 0 16px;
+  margin: 14px 0 0;
+  border: 0;
+  min-width: 0;
+}
+.animal-picker legend {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 0;
+}
+.animal-picker > div {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+.animal-picker button {
+  min-height: 62px;
+  background: #fff8ed;
+  color: #6a5141;
+  border: 1.5px solid #cab39a;
+  border-radius: 13px 11px 12px 10px;
+  font-size: 12px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 2px;
+}
+.animal-picker button[aria-pressed='true'] {
+  background: #f9ecc8;
+  border-color: #826247;
+  box-shadow: 1px 2px 0 #ac8e6e;
+}
+.stamp-sheet {
+  padding: 26px;
+  color: var(--cocoa, #594332);
+}
+.stamp-sheet h2 {
+  margin: 0 24px 4px 0;
+}
+.stamp-sheet p {
+  margin: 0 0 16px;
+  color: #806a56;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.stamp-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.stamp-options button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 4px;
+  border: 1.5px solid #947354;
+  border-radius: 10px 14px 11px 14px;
+  color: var(--cocoa, #594332);
+  background: #f6e5b9;
+  box-shadow: 1px 2px 0 #af9271;
+  font-size: 14px;
+}
+.stamp-options button:nth-child(2) {
+  background: #e2eacb;
+}
+.stamp-options button:nth-child(3) {
+  background: #f6d8c8;
+}
+.stamp-options button:nth-child(4) {
+  background: #efe5d6;
+}
+.stamp-sheet ul {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.stamp-sheet li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+@media (max-width: 760px) {
+  .card-stamps {
+    padding: 0 7px 6px;
+  }
+  .card-stamps button {
+    min-height: 32px;
+  }
+  .animal-picker > div {
+    gap: 4px;
+  }
+}

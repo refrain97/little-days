@@ -54,7 +54,7 @@ export function cloudControls() {
       ${field('兼容接口地址', 'type="url" autocomplete="off" autocapitalize="none" spellcheck="false" data-ai-endpoint required placeholder="https://…/v1"')}
       ${field('模型名', plain + ' data-ai-model autocapitalize="none" spellcheck="false" required')}
       ${field('API Key', secret + ' data-ai-key placeholder="仅保存在这台设备"')}
-      <p>对「一起看」的手记点识别并确认后，会把所选素材发给此服务。接口须支持浏览器跨域访问。</p>
+      <p>用于拍照识菜、识别店名与文字自动整理。「一起看」的手记会在你确认后，将所选照片或文字发给此服务。</p>
       <div class="cloud-actions"><button type="submit">保存 AI 配置</button><button type="button" data-forget-ai>清除配置</button></div>
       <p data-ai-status role="status"></p>
     </form></details>`

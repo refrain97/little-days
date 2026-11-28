@@ -195,6 +195,16 @@ export async function checkTwoDevices(browser, base, screenshot) {
     await sync(b.page)
     const path = 'shared/entries/' + seed.note + '.json'
     const note = repo.read(path)
+    assert(
+      !/"(?:audio[^"]*|cloudAudioPath)"\s*:|data:audio\//i.test(
+        JSON.stringify(note),
+      ),
+      '共享手记带有音频附件字段',
+    )
+    assert(
+      ![...repo.files.keys()].some((path) => path.startsWith('shared/audio/')),
+      '出现了云端音频附件',
+    )
     assert.equal(note.data.isBreakfast, true)
     assert.equal(note.data.stickerAuthor.animal, 'cat')
     assert(repo.files.has(note.photoPath) && repo.files.has(note.thumbPath))
@@ -352,5 +362,173 @@ export async function checkTwoDevices(browser, base, screenshot) {
     )
   } finally {
     await Promise.all([a.context.close(), b?.context.close()])
+  }
+}
+
+// Open a v5 notebook before application startup, exactly as on a returning device.
+export async function checkRecordingMigration(browser, base) {
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  try {
+    const origin = new URL(base).origin
+    await context.route('**/*', (route) => {
+      const url = new URL(route.request().url())
+      if (url.origin !== origin) return route.abort()
+      if (url.pathname.endsWith('/old-notebook.html'))
+        return route.fulfill({
+          contentType: 'text/html',
+          body: '<!doctype html><title>本机迁移验收</title>',
+        })
+      return route.continue()
+    })
+    const page = await context.newPage()
+    await page.goto(new URL('old-notebook.html', base).href)
+    const result = await page.evaluate(async () => {
+      const { createEntry } = await import('./src/journal.js')
+      const {
+        requestDone,
+        transactionDone,
+        journalDatabase,
+        readRecordWithMedia,
+      } = await import('./src/storage.js')
+      const {
+        exportBackup,
+        importBackup,
+        exportPrivateBackup,
+        importPrivateBackup,
+      } = await import('./src/backup.js')
+      const before = indexedDB.open('little-days', 5)
+      const photoRef = '/__little_days_media__/shared-old/image/123'
+      const audioRef = '/__little_days_media__/shared-old/audio/456'
+      const legacyBytes = new Uint8Array([33, 45, 50, 57]).buffer
+      const legacyUrl = 'data:audio/mp4;base64,IS0yOQ=='
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 20
+      const photo = canvas.toDataURL('image/jpeg')
+      const picture = {
+        bytes: Uint8Array.from(atob(photo.split(',')[1]), (c) =>
+          c.charCodeAt(0),
+        ).buffer,
+        type: 'image/jpeg',
+      }
+      const shared = {
+        ...createEntry({
+          id: 'shared-old',
+          text: '原来的句子',
+          title: '保留我的照片和原话',
+          image: photoRef,
+          visibility: 'shared',
+          rating: 5,
+        }),
+        source: 'voice',
+        audio: audioRef,
+        cloudAudioPath: 'shared/audio/old.bin',
+      }
+      const personal = {
+        ...createEntry({
+          id: 'private-old',
+          title: '私人的旧记忆',
+          text: '这段文字保留',
+          visibility: 'private',
+        }),
+        source: 'voice',
+        audio: legacyUrl,
+      }
+      before.onupgradeneeded = () => {
+        const db = before.result,
+          records = db.createObjectStore('records', { keyPath: 'id' }),
+          media = db.createObjectStore('media')
+        records.createIndex('cloudAudioPath', 'cloudAudioPath')
+        records.add(shared)
+        records.add(personal)
+        media.put(picture, photoRef)
+        media.put(picture, photoRef + '/thumbnail')
+        for (const key of [
+          audioRef,
+          audioRef + '-orphan',
+          'unusual-legacy-sound-key',
+        ])
+          media.put({ bytes: legacyBytes, type: 'audio/mp4' }, key)
+        const legacyKey = 'xiaorizi.journal.v1'
+        const oldSnapshot = JSON.stringify([shared, personal])
+        localStorage.setItem(legacyKey, oldSnapshot)
+        db.createObjectStore('settings').put(
+          JSON.stringify([[legacyKey, oldSnapshot]]),
+          'legacy-import-receipt',
+        )
+        db.createObjectStore('places', { keyPath: 'id' })
+        db.createObjectStore('plans', { keyPath: 'id' })
+      }
+      ;(await requestDone(before)).close()
+      const db = await journalDatabase()
+      async function raw() {
+        const tx = db.transaction(['records', 'media', 'settings'])
+        const r = tx.objectStore('records'),
+          m = tx.objectStore('media')
+        const [records, keys, settings] = await Promise.all([
+          requestDone(r.getAll()),
+          requestDone(m.getAllKeys()),
+          requestDone(tx.objectStore('settings').getAll()),
+          transactionDone(tx),
+        ])
+        const json = JSON.stringify([records, settings])
+        return {
+          clean:
+            !/"(?:audio\w*|cloudAudioPath)"\s*:|data:audio\/|shared\/audio\//i.test(
+              json,
+            ),
+          keys,
+          indexGone: !r.indexNames.contains('cloudAudioPath'),
+        }
+      }
+      const upgraded = await raw()
+      const first = await readRecordWithMedia('shared-old')
+      const local = await readRecordWithMedia('private-old')
+      const full = await exportBackup(),
+        privateFile = await exportPrivateBackup()
+      // Old backup files stay readable. Only their photos and text enter the new notebook.
+      for (const file of [full, privateFile]) {
+        for (const row of file.records) {
+          row.source = 'voice'
+          row.audio = legacyUrl
+        }
+      }
+      await importBackup(full)
+      await importPrivateBackup(privateFile)
+      const restored = await raw(),
+        restoredPhoto = await readRecordWithMedia('shared-old')
+      const exports = JSON.stringify([
+        await exportBackup(),
+        await exportPrivateBackup(),
+      ])
+      return {
+        version: db.version,
+        legacyClean: localStorage.getItem('xiaorizi.journal.v1') === null,
+        upgraded,
+        restored: restored.clean,
+        shared: [first.text, first.source, first.rating, first.image === photo],
+        personal: [local.text, local.source, local.visibility],
+        restoredPhoto: restoredPhoto.image === photo,
+        exportsClean:
+          !/"(?:audio\w*|cloudAudioPath)"\s*:|data:audio\/|"source":"voice"/i.test(
+            exports,
+          ),
+        expectedKeys: [photoRef, photoRef + '/thumbnail'],
+      }
+    })
+    assert.equal(result.version, 6)
+    assert(result.legacyClean)
+    assert.deepEqual(result.upgraded, {
+      clean: true,
+      keys: result.expectedKeys,
+      indexGone: true,
+    })
+    assert.deepEqual(result.shared, ['原来的句子', 'photo', 5, true])
+    assert.deepEqual(result.personal, ['这段文字保留', 'text', 'private'])
+    assert(result.restored && result.restoredPhoto && result.exportsClean)
+    console.log(
+      '✓ 旧版 v5 手账、整本及私人备份迁移 · 文字、照片、评分和私密状态保留，原声及孤立缓存清除',
+    )
+  } finally {
+    await context.close()
   }
 }

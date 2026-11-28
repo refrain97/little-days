@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
 import { Repository, fineToken } from './github-fixture.mjs'
+import { migrateSyncState } from '../src/legacy-sync.js'
 import { createGitHubSync } from '../src/github-sync.js'
 
 const entryId = 'entry-1'
@@ -47,13 +48,11 @@ class Device {
           for (const item of this.entities.values()) {
             if (item.photoKey === path) return this.photo
             if (item.thumbKey === path) return this.thumb
-            if (item.audioKey === path) return this.audio
           }
           return null
         },
         readPhoto: async () => this.photo,
         readThumb: async () => this.thumb,
-        readAudio: async () => this.audio,
         apply: async ({
           kind,
           id,
@@ -61,13 +60,10 @@ class Device {
           expected,
           photoPath,
           thumbPath,
-          audioPath,
           keepPhoto,
           keepThumb,
-          keepAudio,
           readPhoto,
           readThumb,
-          readAudio,
         }) => {
           const key = kind + '/' + id
           if (
@@ -89,10 +85,6 @@ class Device {
           if (thumbPath) {
             if (!keepThumb) this.thumb = await readThumb()
             entity.thumbKey = keepThumb ? expected.thumbKey : thumbPath
-          }
-          if (audioPath) {
-            if (!keepAudio) this.audio = await readAudio()
-            entity.audioKey = keepAudio ? expected.audioKey : audioPath
           }
           this.entities.set(key, entity)
           const acknowledged = structuredClone(entity)
@@ -131,12 +123,9 @@ async function pair({ attachments = false } = {}) {
     first.thumb =
       'data:image/jpeg;base64,' +
       Buffer.from([255, 216, 255, 224, 255, 217]).toString('base64')
-    first.audio =
-      'data:audio/mp4;base64,' + Buffer.alloc(1_100_000, 7).toString('base64')
     Object.assign(entity, {
       photoKey: 'device-only-photo',
       thumbKey: 'device-only-thumb',
-      audioKey: 'device-only-audio',
     })
   }
   first.entities.set(entryKey, entity)
@@ -244,7 +233,6 @@ test('same-field edits keep the previous version; deleted entries can be restore
 
 test('withdrawing a shared entry removes its history and media; stale edits and credentials never enter Git objects', async () => {
   const { repo, first, second } = await pair({ attachments: true })
-  assert.equal(first.audio, second.audio)
   assert.equal(first.photo, second.photo)
   assert.equal(first.thumb, second.thumb)
   first.edit({ title: '另一版' })
@@ -275,7 +263,6 @@ test('withdrawing a shared entry removes its history and media; stale edits and 
       stale,
       'device-only-photo',
       'device-only-thumb',
-      'device-only-audio',
     ])
       assert.ok(!bytes.includes(forbidden))
   }
@@ -326,7 +313,6 @@ test('unchanged private HEAD reuses its verified tree across restart; a text edi
     [['GET', '/git/blobs/' + repo.files.get(entryPath)]],
   )
   assert.equal(second.photo, first.photo)
-  assert.equal(second.audio, first.audio)
 
   const marker = 'shared/.little-days.json'
   repo.replaceFile(marker, { format: 'foreign', version: 1 })
@@ -526,4 +512,109 @@ test('an existing shared photo gains an authenticated thumbnail, retained and re
   assert.ok(repo.files.has(initial.thumbPath))
   await second.sync.restoreTrash(trash.id)
   assert.equal(second.thumb, first.thumb)
+})
+
+test('v1 recordings are removed atomically from the live tree and trash, without fetching them or losing concurrent edits', async () => {
+  const { repo, first, second } = await pair({ attachments: true })
+  first.edit({ notes: '保留的历史备注' })
+  await first.sync.sync()
+  const history = (await first.sync.listTrash())[0]
+  const trashFile = 'shared/trash/' + history.id + '.json'
+  const oldMarker = 'shared/.little-days.json'
+  repo.replaceFile(oldMarker, { format: 'little-days-shared', version: 1 })
+  const audioSha = repo.putBlob(
+    Buffer.from('synthetic legacy sound').toString('base64'),
+  )
+  const audioFile = 'shared/audio/' + audioSha + '.bin'
+  repo.head = repo.putCommit(
+    repo.putTree(new Map([...repo.files, [audioFile, audioSha]])),
+    [repo.head],
+  )
+  const live = repo.read(entryPath)
+  const legacy = { audioPath: audioFile, audioType: 'audio/mp4' }
+  const oldDoc = { ...live, ...legacy, data: { ...live.data, source: 'voice' } }
+  repo.replaceFile(entryPath, oldDoc)
+  const oldTrash = repo.read(trashFile)
+  repo.replaceFile(trashFile, {
+    ...oldTrash,
+    record: { ...oldTrash.record, ...legacy },
+  })
+  repo.requests.length = 0
+  repo.beforePush = () => {
+    assert.equal(repo.read(oldMarker).version, 1)
+    assert(repo.files.has(audioFile))
+    repo.replaceFile(entryPath, {
+      ...oldDoc,
+      data: { ...oldDoc.data, notes: '两台手机并发时的原话' },
+    })
+  }
+  await second.sync.sync()
+  assert.equal(repo.read(oldMarker).version, 2)
+  assert(!repo.files.has(audioFile))
+  assert(
+    !repo.requests.some(
+      ([method, path]) => method === 'GET' && path === '/git/blobs/' + audioSha,
+    ),
+  )
+  for (const [path] of repo.files)
+    if (path.endsWith('.json'))
+      assert.doesNotMatch(
+        JSON.stringify(repo.read(path)),
+        /"audio(?:Path|Type)?"|shared\/audio\//,
+      )
+  const migrated = repo.read(entryPath)
+  assert.equal(migrated.data.notes, '两台手机并发时的原话')
+  assert.equal(migrated.data.source, 'photo')
+  assert.equal(migrated.photoPath, live.photoPath)
+  assert.equal(migrated.thumbPath, live.thumbPath)
+  await second.sync.restoreTrash(history.id)
+  assert.equal(repo.read(entryPath).data.notes, oldTrash.record.data.notes)
+  assert.equal(repo.read(entryPath).photoPath, live.photoPath)
+  repo.requests.length = 0
+  await second.sync.sync()
+  assert.deepEqual(repo.requests, [
+    ['GET', ''],
+    ['GET', '/git/ref/heads/main'],
+  ])
+})
+
+test('v1 offline merge bases drop recording keys and retain pending edits and withdrawals', () => {
+  const data = {
+    id: entryId,
+    notes: '原话',
+    source: 'voice',
+    visibility: 'shared',
+  }
+  const saved = migrateSyncState({
+    published: [entryKey],
+    pending: [{ key: entryKey, operation: 'withdraw' }],
+    restores: ['restore-me'],
+    inventory: { files: [['shared/audio/old.bin', '123']] },
+    base: {
+      [entryKey]: {
+        wire: {
+          data,
+          audioPath: 'shared/audio/old.bin',
+          audioType: 'audio/aac',
+          photoPath: '',
+        },
+        sha: '123',
+        audioKey: 'old-local-key',
+        photoKey: '',
+        thumbKey: '',
+        localDigest: JSON.stringify([data, '', 'old-local-key']),
+      },
+    },
+    trash: [{ id: 'restore-me', audioPath: 'shared/audio/old.bin' }],
+  })
+  assert.doesNotMatch(JSON.stringify(saved), /audio|old-local-key|voice/)
+  assert.equal(saved.base[entryKey].wire.data.source, 'text')
+  assert.deepEqual(JSON.parse(saved.base[entryKey].localDigest), [
+    { ...data, source: 'text' },
+    '',
+    '',
+  ])
+  assert.deepEqual(saved.pending, [{ key: entryKey, operation: 'withdraw' }])
+  assert.deepEqual(saved.published, [entryKey])
+  assert.deepEqual(saved.restores, ['restore-me'])
 })

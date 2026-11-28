@@ -3,7 +3,9 @@ import { assetPath } from './paths.js'
 // The page never requests it from a server, including on a LAN without HTTPS.
 export const mediaPrefix = '/__little_days_media__/'
 export const isLocalMedia = (value) =>
-  typeof value === 'string' && value.startsWith(mediaPrefix)
+  typeof value === 'string' &&
+  value.startsWith(mediaPrefix) &&
+  value.slice(mediaPrefix.length).split('/')[1] !== 'audio'
 
 const escapes = {
   '&': '&amp;',
@@ -18,7 +20,7 @@ export function canDisplayMedia(url) {
     (typeof url === 'string' &&
       (/^\/images\/[a-zA-Z0-9_-]+\.(?:png|jpeg|jpg|webp)$/i.test(url) ||
         /^blob:/i.test(url) ||
-        Boolean(dataMediaType(url, 'image') || dataMediaType(url, 'audio'))))
+        Boolean(dataMediaType(url))))
   )
 }
 export function mediaAttributes(url, size) {
@@ -36,23 +38,20 @@ export function mediaAttributes(url, size) {
   )
 }
 
-export function dataMediaType(value, kind) {
+export function dataMediaType(value) {
   if (typeof value !== 'string' || !value.startsWith('data:')) return ''
   const comma = value.indexOf(',')
   if (comma < 0 || comma > 200) return ''
   const header = value.slice(5, comma)
   if (!/;base64$/i.test(header)) return ''
   const type = header.slice(0, -7)
-  const pattern =
-    kind === 'image'
-      ? /^image\/(?:jpe?g|png|webp|gif|avif|bmp|heic|heif)$/i
-      : /^(?:audio\/[\w.+-]+|video\/(?:webm|mp4)|application\/(?:octet-stream|ogg))(?:;[\w.+="-]+)*$/i
+  const pattern = /^image\/(?:jpe?g|png|webp|gif|avif|bmp|heic|heif)$/i
   return pattern.test(type) ? type : ''
 }
 
-export function dataMediaBinary(value, kind) {
-  const type = dataMediaType(value, kind)
-  if (!type) throw new Error('照片或原声的文件格式无法读取。')
+export function dataMediaBinary(value) {
+  const type = dataMediaType(value)
+  if (!type) throw new Error('照片的文件格式无法读取。')
   const start = value.indexOf(',') + 1
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
   const result = new Uint8Array(
@@ -85,7 +84,7 @@ export function blobDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result)
-    reader.onerror = () => reject(new Error('照片或原声读取失败。'))
+    reader.onerror = () => reject(new Error('照片读取失败。'))
     reader.readAsDataURL(blob)
   })
 }
@@ -95,7 +94,7 @@ export function observeMedia(readBlob) {
   if (stopObserving) return stopObserving
   const active = new Map()
   const recentPreviews = new Set()
-  const selector = 'img[data-local-media],audio[data-local-media]'
+  const selector = 'img[data-local-media]'
   function release(el) {
     const state = active.get(el)
     if (!state) return
@@ -106,7 +105,6 @@ export function observeMedia(readBlob) {
       el.removeAttribute('data-ready')
       el.removeAttribute('data-image-error')
       el.removeAttribute('src')
-      if (el.tagName === 'AUDIO') el.load()
     }
     URL.revokeObjectURL(state.objectUrl)
     state.objectUrl = ''
@@ -122,7 +120,7 @@ export function observeMedia(readBlob) {
       state.objectUrl = URL.createObjectURL(blob)
       el.src = state.objectUrl
     } catch {
-      // Keep the alt text or native audio controls available if storage is unavailable.
+      // Keep the alternative text visible when storage is unavailable.
     } finally {
       if (state.token === token) state.pending = false
     }
@@ -146,7 +144,7 @@ export function observeMedia(readBlob) {
               recentPreviews.delete(oldest)
               release(oldest)
             }
-          } else if (target.tagName !== 'AUDIO' || target.paused) {
+          } else {
             release(target)
           }
         }

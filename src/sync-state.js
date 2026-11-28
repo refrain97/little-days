@@ -1,3 +1,5 @@
+import { migrateSyncState } from './legacy-sync.js'
+
 // Kept outside the journal database and its portable backups. The GitHub credential
 // never enters a journal entry, export, URL, repository file, or UI status message.
 export function isFineGrainedToken(value) {
@@ -12,8 +14,23 @@ export function createSyncState() {
     opened = new Promise((resolve, reject) => {
       if (!globalThis.indexedDB)
         return reject(new Error('此浏览器无法保存同步设置。'))
-      const req = indexedDB.open('little-days-github-sync', 1)
-      req.onupgradeneeded = () => req.result.createObjectStore('settings')
+      const req = indexedDB.open('little-days-github-sync', 2)
+      req.onupgradeneeded = (event) => {
+        if (event.oldVersion === 0) {
+          req.result.createObjectStore('settings')
+          return
+        }
+        const store = req.transaction.objectStore('settings')
+        const rows = store.openCursor(
+          IDBKeyRange.bound('state:', 'state:\uffff'),
+        )
+        rows.onsuccess = () => {
+          const cursor = rows.result
+          if (!cursor) return
+          cursor.update(migrateSyncState(cursor.value))
+          cursor.continue()
+        }
+      }
       req.onsuccess = () => {
         const db = req.result
         db.onversionchange = () => {

@@ -5,8 +5,9 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { devices, webkit } from 'playwright'
+import { collectSite } from './build.mjs'
 
-import { checkTwoDevices } from './cloud-qa.mjs'
+import { checkTwoDevices, checkRecordingMigration } from './cloud-qa.mjs'
 import { checkPwaUpdates } from './pwa-qa.mjs'
 
 const viewport = { width: 390, height: 844 }
@@ -283,6 +284,82 @@ async function keyboardViewport(page, reduced) {
   }, reduced)
 }
 
+async function checkShellBounds(page, label, afterClose = false) {
+  const state = await page.evaluate(() => {
+    const shell = document.querySelector('#app')
+    const nav = document.querySelector('.bottom-nav')
+    return {
+      position: getComputedStyle(shell).position,
+      top: shell.getBoundingClientRect().top,
+      bottom: shell.getBoundingClientRect().bottom,
+      navBottom: nav.getBoundingClientRect().bottom,
+      height: innerHeight,
+      documentY: window.scrollY,
+      leaking: [
+        document.documentElement,
+        document.body,
+        shell,
+        document.querySelector('#main'),
+        nav,
+      ].some((el) =>
+        [
+          'height',
+          '--visible-height',
+          '--visible-top',
+          '--keyboard-offset',
+        ].some((name) => el.style.getPropertyValue(name)),
+      ),
+      focusedInput: document.activeElement?.matches(
+        'input,textarea,[contenteditable=true]',
+      ),
+    }
+  })
+  assert.equal(state.position, 'fixed', label + ' 手机壳应固定在布局视口')
+  assert.equal(state.documentY, 0, label + ' 页面留下了滚动位移')
+  assert(
+    Math.abs(state.top) <= 2 &&
+      Math.abs(state.bottom - state.height) <= 2 &&
+      Math.abs(state.navBottom - state.height) <= 2,
+    label + ' 底部出现空白 ' + JSON.stringify(state),
+  )
+  assert.equal(state.leaking, false, label + ' 键盘样式泄漏到底层')
+  if (afterClose)
+    assert.equal(state.focusedInput, false, label + ' 关闭后仍有输入框聚焦')
+}
+
+async function keyboardDismissed(page, label) {
+  // Safari can keep reporting its short visual viewport even after removing the editor.
+  await checkShellBounds(page, label + ' 刚关闭', true)
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 150)))
+  await checkShellBounds(page, label + ' 收起动画中', true)
+  await keyboardViewport(page, false)
+  await checkShellBounds(page, label + ' 收起后', true)
+}
+
+async function noRecorderControls(page) {
+  assert.equal(
+    await page.locator('audio, input[type=file][accept*="audio" i]').count(),
+    0,
+  )
+  const buttons = await page
+    .locator('button,[role=button]')
+    .evaluateAll((elements) =>
+      elements.map((el) =>
+        [
+          el.textContent,
+          el.getAttribute('title'),
+          el.getAttribute('aria-label'),
+        ].join(' '),
+      ),
+    )
+  assert(
+    !buttons.some((label) =>
+      /录音|麦克风|语音速记|语音识别|转写|开始听写/.test(label),
+    ),
+    '存在网页录音入口',
+  )
+}
+
 async function checkDialog(page, spec) {
   await turnTo(page, spec.page)
   // Record focus events as well as the final active element to catch focus-then-blur keyboard flashes.
@@ -331,10 +408,12 @@ async function checkDialog(page, spec) {
   pass(
     spec.open + ' · 打开未聚焦输入控件 · 底层锁定 · ' + spec.save + ' 完整可点',
   )
+  await noRecorderControls(page)
   const field = dialog.locator(spec.field)
   await field.tap()
   await keyboardViewport(page, true)
   await field.fill('周末买花')
+  await checkShellBounds(page, spec.open + ' 键盘展开')
   await assertExposed(field, spec.open + ' 手动选中的输入框')
   await assertExposed(save, spec.save)
   assert.equal(
@@ -347,7 +426,7 @@ async function checkDialog(page, spec) {
   await save.tap()
   await dialog.waitFor({ state: 'detached' })
   assert(Date.now() - saveStarted < 10000, spec.save + ' 无 Key 保存超过 10 秒')
-  await keyboardViewport(page, false)
+  await keyboardDismissed(page, spec.save)
   assert(
     await page
       .locator('#main')
@@ -362,6 +441,39 @@ async function checkDialog(page, spec) {
     spec.open +
       ' · 模拟键盘可视高度 420px · 输入框与保存按钮可见 · 点按保存后解锁',
   )
+}
+
+async function checkEditorCancel(page) {
+  await turnTo(page, 'home')
+  for (const [action, selector, fieldSelector] of [
+    ['记一笔', '.life-capture', '[data-body]'],
+    ['一句话速记', '.quick-note', '[data-input]'],
+  ]) {
+    await page.getByRole('button', { name: action, exact: true }).first().tap()
+    const dialog = page.locator('dialog' + selector + '[open]')
+    const field = dialog.locator(fieldSelector)
+    await field.fill('这一句只写在草稿里')
+    await keyboardViewport(page, true)
+    assert(
+      await dialog.evaluate(
+        (el) => el.style.getPropertyValue('--visible-height') === '420px',
+      ),
+    )
+    await field.blur()
+    assert.equal(
+      await dialog.evaluate((el) =>
+        el.style.getPropertyValue('--visible-height'),
+      ),
+      '',
+      action + ' 失焦后还保留键盘高度',
+    )
+    await field.tap()
+    await keyboardViewport(page, true)
+    await dialog.locator('[data-close]').tap()
+    await dialog.waitFor({ state: 'detached' })
+    await keyboardDismissed(page, action + ' 取消')
+  }
+  pass('键盘收起 · 输入框失焦清除弹窗尺寸 · 两类手记弹窗取消后没有底部空白')
 }
 
 async function checkPlanResponse(page) {
@@ -644,108 +756,96 @@ async function checkBreakfast(page) {
   )
 }
 
-async function checkVoice(page) {
+async function checkQuickNote(page) {
   await turnTo(page, 'home')
-  const open = page
-    .locator('[data-action="quick-voice"]')
-    .filter({ visible: true })
-    .first()
-  const dialog = page.locator('dialog.quick-voice[open]')
-  // Stand-ins run only in this isolated context. No system microphone, external API or OS prompt.
-  await page.evaluate(() => {
-    class ChineseRecognition {
-      start() {
-        window.qaSpeech = this
-        queueMicrotask(() => this.onstart?.())
-      }
-      stop() {
-        queueMicrotask(() => this.onend?.())
-      }
-      abort() {
-        this.stop()
-      }
-    }
-    ChineseRecognition.prototype.processLocally = false
-    for (const key of ['SpeechRecognition', 'webkitSpeechRecognition'])
-      Object.defineProperty(window, key, {
-        configurable: true,
-        value: ChineseRecognition,
-      })
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      configurable: true,
-      value: async () => {
-        throw new DOMException('无麦克风权限', 'NotAllowedError')
-      },
-    })
+  await noRecorderControls(page)
+  const open = page.locator('.bottom-nav [data-action="quick-note"]')
+  await page.locator('#main').evaluate((el) => {
+    el.scrollTop = el.scrollHeight
   })
-  await page.locator('#main').evaluate((main) => {
-    main.scrollTop = main.scrollHeight
-  })
-  await assertExposed(open, '滚到底仍可一键语音速记')
-  await open.tap()
-  await assertExposed(dialog.locator('[data-close]'), '关闭语音速记')
-  assert.equal(
-    await page.evaluate(() => document.activeElement.matches('input,textarea')),
-    false,
-  )
-  await screenshot(page, 'voice-listening')
-  await dialog.locator('[data-close]').tap()
-  await dialog.waitFor({ state: 'hidden' })
-  await open.tap()
-  await page.waitForFunction(() => window.qaSpeech?.lang === 'zh-CN')
-  await page.evaluate(() => {
-    window.qaSpeech.onresult({
-      results: [
-        { 0: { transcript: '找个晴天去河边野餐' }, isFinal: true, length: 1 },
-      ],
-      resultIndex: 0,
-    })
-  })
-  await dialog.locator('[data-primary]').tap()
-  await dialog.getByRole('button', { name: '存下来', exact: true }).waitFor()
-  assert.match(await dialog.locator('[data-destination]').innerText(), /有空/)
-  await screenshot(page, 'voice-confirm')
-  await dialog.locator('[data-primary]').tap()
-  await dialog.waitFor({ state: 'hidden' })
-  assert(
-    await page.evaluate(async () =>
-      (await (await import('./src/plans.js')).readPlans()).some((p) =>
-        p.title.includes('野餐'),
+  await assertExposed(open, '滚动后打开一句话速记')
+  for (const [kind, words] of [
+    ['entry', '今天早餐在山间咖啡喝了拿铁，太好喝了，下次还要。'],
+    ['plan', '找个晴天去河边野餐'],
+  ]) {
+    await open.tap()
+    const dialog = page.getByRole('dialog', { name: '一句话速记' })
+    const field = dialog.getByPlaceholder(
+      '点键盘右下角话筒直接说，或随手写一句…',
+    )
+    const save = dialog.getByRole('button', { name: '记下来', exact: true })
+    assert.equal(
+      await page.evaluate(() =>
+        document.activeElement.matches('input,textarea'),
       ),
-    ),
-  )
-  await page.evaluate(() => {
-    for (const key of ['SpeechRecognition', 'webkitSpeechRecognition'])
-      Object.defineProperty(window, key, {
-        configurable: true,
-        value: undefined,
-      })
+      false,
+    )
+    await noRecorderControls(page)
+    if (kind === 'entry') await screenshot(page, 'quick-note-open')
+    await field.tap()
+    await keyboardViewport(page, true)
+    await field.fill(words)
+    await assertExposed(field, '键盘上方的速记输入框')
+    await assertExposed(save, '键盘上方的记下来')
+    await checkShellBounds(page, '一句话速记打字中')
+    if (kind === 'plan') {
+      const scope = dialog.locator('[data-visibility]')
+      await scope.tap()
+      assert.equal(
+        await scope.innerText(),
+        '仅自己',
+        '键盘弹起时点按可见范围应生效',
+      )
+    }
+    if (kind === 'entry') await screenshot(page, 'quick-note-keyboard', true)
+    const started = Date.now()
+    await save.tap()
+    await dialog.waitFor({ state: 'detached' })
+    assert(Date.now() - started < 10000, '速记保存超过10秒')
+    await keyboardDismissed(page, '一句话速记提交')
+  }
+  const state = await page.evaluate(async () => {
+    const { readRecords, journalDatabase } = await import('./src/storage.js')
+    const { readPlans } = await import('./src/plans.js')
+    const note = (await readRecords()).find((row) =>
+      row.text.includes('今天早餐在山间咖啡'),
+    )
+    const plans = await readPlans()
+    const db = await journalDatabase()
+    const request = db.transaction('records').objectStore('records').getAll()
+    const records = await new Promise((ok, fail) => {
+      request.onsuccess = () => ok(request.result)
+      request.onerror = () => fail(request.error)
+    })
+    return {
+      note,
+      records,
+      foundPlan: plans.some(
+        (p) => p.title === '找个晴天去河边野餐' && p.visibility === 'private',
+      ),
+    }
   })
-  await open.tap()
-  await dialog.locator('[data-type]').tap()
-  await dialog
-    .locator('[data-input]')
-    .fill('今天早餐在山间咖啡喝了拿铁，太好喝了，下次还要。')
-  await dialog.locator('[data-primary]').tap()
-  await dialog.getByRole('button', { name: '存下来', exact: true }).waitFor()
-  assert.match(await dialog.locator('[data-destination]').innerText(), /手记/)
-  await dialog.locator('[data-tune]').tap()
-  await assertExposed(dialog.locator('[data-primary]'), '微调后的存下来')
-  await screenshot(page, 'voice-edit')
-  await dialog.locator('[data-primary]').tap()
-  await dialog.waitFor({ state: 'hidden' })
-  const note = await page.evaluate(async () =>
-    (await (await import('./src/storage.js')).readRecords()).find((e) =>
-      e.text.includes('今天早餐在山间咖啡'),
-    ),
+  assert(
+    state.note?.isBreakfast &&
+      state.note.category === '饮品' &&
+      state.note.diningSource === 'out' &&
+      state.note.venueName.includes('山间'),
+  )
+  assert(state.foundPlan, '待办未分流到有空清单')
+  assert(
+    state.records.some((row) => row.text === '周末买花'),
+    '记一笔未实际写入',
   )
   assert(
-    note?.isBreakfast &&
-      note.diningSource === 'out' &&
-      note.venueName.includes('山间'),
+    !/"(?:audio[^"]*|cloudAudioPath|recording|voiceBlob)"\s*:|data:audio\//i.test(
+      JSON.stringify(state.records),
+    ),
+    'IndexedDB 手记包含音频附件或字段',
   )
+  await noRecorderControls(page)
+  await screenshot(page, 'quick-note-saved')
   pass(
-    '语音速记 · 浮层打开与关闭、中文语音事件、待办分流、无权限文字输入、早餐探店手记保存',
+    '一句话速记 · 早餐探店和待办正确分流 · 无网页录音入口与音频字段 · 键盘收起后底栏贴底',
   )
 }
 
@@ -811,6 +911,15 @@ async function checkDesktop(browser, base) {
 }
 
 async function run() {
+  // Scan the exact scripts shipped to Pages, including lazily loaded modules.
+  for (const [name, bytes] of await collectSite()) {
+    if (name.endsWith('.js'))
+      assert.doesNotMatch(
+        bytes.toString(),
+        /\b(?:MediaRecorder|(?:webkit)?SpeechRecognition|getUserMedia|AudioContext|webkitAudioContext)\b|audio\/transcriptions/,
+        name + ' 包含已退役的网页录音接口',
+      )
+  }
   await mkdir(screenshots, { recursive: true })
   const { child, ready } = startPreview()
   let browser
@@ -871,6 +980,7 @@ async function run() {
     await seedLocalWishes(page)
     for (const item of pages) {
       await turnTo(page, item.id)
+      await noRecorderControls(page)
       for (const [filename, label, position] of stops) {
         await checkScroll(page, position, item.tab + ' · ' + label)
         await screenshot(page, item.id + '-' + filename)
@@ -897,8 +1007,10 @@ async function run() {
     await checkSettings(page)
     await checkStickers(page)
     await checkBreakfast(page)
-    await checkVoice(page)
+    await checkEditorCancel(page)
+    await checkQuickNote(page)
     await checkDesktop(browser, base)
+    await checkRecordingMigration(browser, base)
     await checkTwoDevices(browser, base, screenshot)
     await checkPwaUpdates(browser)
     assert.deepEqual(failures, [], '浏览器错误或意外网络请求')

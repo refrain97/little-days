@@ -1,4 +1,4 @@
-import { showEditor, usesMobileShell } from './dialog-viewport.js'
+import { closeEditor, showEditor, usesMobileShell } from './dialog-viewport.js'
 import { authorBadge } from './cloud-profile.js'
 import { icon } from './icons.js'
 import { photoAttributes } from './gallery.js'
@@ -339,7 +339,7 @@ export function openPlanEditor({
     $('.ft-fields').inert = true
     try {
       await work()
-      dialog.close()
+      closeEditor(dialog)
     } catch (error) {
       setError(error?.message || '未能保存更改，请再试一次。')
     } finally {
@@ -372,7 +372,7 @@ export function openPlanEditor({
     void commit(() => onSave(fields))
   }
   $('[data-close]').onclick = () => {
-    if (!busy) dialog.close()
+    if (!busy) closeEditor(dialog)
   }
   dialog.oncancel = (event) => {
     if (busy) event.preventDefault()
@@ -382,7 +382,7 @@ export function openPlanEditor({
     outside = event.target === dialog
   }
   dialog.onclick = (event) => {
-    if (!busy && outside && event.target === dialog) dialog.close()
+    if (!busy && outside && event.target === dialog) closeEditor(dialog)
   }
   dialog.addEventListener(
     'close',

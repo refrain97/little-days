@@ -8,6 +8,7 @@ test('gallery accepts device media and bundled examples while rejecting external
   for (const url of [
     'https://raw.githubusercontent.com/example/private/main/shared/photos/test.jpg',
     'https://example.invalid/test.jpg', '//example.invalid/test.jpg', '/images/../private',
+    '/__little_days_media__/entry/audio/old', 'data:audio/aac;base64,AQID',
   ]) assert.equal(mediaAttributes(url), '')
 })
 
@@ -54,4 +55,16 @@ test('venue totals follow the records visible on each device while shared groupi
   assert.deepEqual(totals(groupVenues(a, profiles, {includePrivate:true})), [['另一家',1,1],['松间面馆',3,2]])
   assert.deepEqual(totals(groupVenues(b, profiles, {includePrivate:true})), [['松间面馆',4.5,2]])
   for (const device of [a,b]) assert.deepEqual(totals(groupVenues(device, profiles)), [['松间面馆',4,1]])
+})
+
+test('legacy dictation retains its original words and photo without an attachment field', async () => {
+  const { createEntry } = await import('../src/journal.js')
+  const saved = { id: 'old-note', source: 'voice', audio: 'data:audio/aac;base64,AQID', text: '我的原话' }
+  for (const [image, source] of [['', 'text'], ['/images/hero.webp', 'photo']]) {
+    const entry = createEntry({ ...saved, image })
+    assert.equal(entry.text, saved.text)
+    assert.equal(entry.source, source)
+    assert.equal(entry.originalTextUnverified, undefined)
+    assert(!Object.hasOwn(entry, 'audio'))
+  }
 })

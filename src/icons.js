@@ -73,14 +73,6 @@ const drawings = {
     '"/>' +
     dot(12, 13.3, 2, green) +
     dot(18.5, 10.2, 0.8),
-  mic:
-    rect(8, 2.4, 8, 13.2, 4, pink) +
-    path(
-      'M5.1 11.1c0 9.5 13.7 9.3 13.7-.2m-6.8 7.7v2.7m-3.2 0h6.4',
-      'none',
-      'stroke-width="2"',
-    ) +
-    path('m9 6.8 2.6.1m-2.6 3h2.1', 'none', 'stroke-width="1.25"'),
   pen:
     path(
       'm3.1 20.8 1.1-5.4L15.9 3.6q1.2-1.2 2.4-.2l2.2 2q1.2 1.1.2 2.2L8.4 19.8Z',
@@ -206,7 +198,6 @@ const drawings = {
       milk,
     ) +
     rect(10, 9.7, 4.9, 4, 1.1, yellow),
-  stop: rect(4.8, 4.8, 14.4, 14.4, 3.2, pink),
   together:
     '<circle cx="8.5" cy="7.5" r="3.4" fill="' +
     pink +

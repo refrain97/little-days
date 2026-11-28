@@ -98,9 +98,9 @@ export function clearAISettings() {
   return getAISettings()
 }
 
-function fileBlob(input, kind) {
+function photoBlob(input) {
   if (input instanceof Blob) return input
-  const { bytes, type } = dataMediaBinary(input, kind)
+  const { bytes, type } = dataMediaBinary(input)
   return new Blob([bytes], { type })
 }
 
@@ -153,7 +153,7 @@ function drawJpeg(image, width, height, quality) {
 }
 
 async function withDecodedPhoto(input, work) {
-  const original = fileBlob(input, 'image')
+  const original = photoBlob(input)
   if (original.type === 'image/svg+xml') throw new Error('请选择照片文件。')
   const url = URL.createObjectURL(original)
   try {
@@ -242,69 +242,12 @@ export async function readPhotoTextLocally(image) {
   }
 }
 
-async function audioPart(value) {
-  const blob = fileBlob(value, 'audio')
-  const Offline =
-    globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext
-  if (!Offline)
-    throw new Error('此设备无法转换录音，可以使用键盘听写或直接保存原声。')
-  let buffer
-  try {
-    buffer = await new Offline(1, 1, 16000).decodeAudioData(
-      await blob.arrayBuffer(),
-    )
-  } catch {
-    throw new Error('此设备无法读取这段音频，可以直接保存原声。')
-  }
-  if (!buffer.length || buffer.duration > 121)
-    throw new Error('请选择两分钟以内的录音进行转写。')
-  const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
-    buffer.getChannelData(i),
-  )
-  const wav = new ArrayBuffer(44 + buffer.length * 2)
-  const view = new DataView(wav)
-  const tag = (at, value) => {
-    for (let i = 0; i < value.length; i++)
-      view.setUint8(at + i, value.charCodeAt(i))
-  }
-  tag(0, 'RIFF')
-  view.setUint32(4, wav.byteLength - 8, true)
-  tag(8, 'WAVE')
-  tag(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, buffer.sampleRate, true)
-  view.setUint32(28, buffer.sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  tag(36, 'data')
-  view.setUint32(40, buffer.length * 2, true)
-  for (let i = 0; i < buffer.length; i++) {
-    let sample = 0
-    for (const channel of channels) sample += channel[i]
-    const mono = Math.max(-1, Math.min(1, sample / channels.length))
-    view.setInt16(
-      44 + i * 2,
-      Math.round(mono * (mono < 0 ? 32768 : 32767)),
-      true,
-    )
-  }
-  const data = await blobDataUrl(new Blob([wav], { type: 'audio/wav' }))
-  return {
-    type: 'input_audio',
-    input_audio: { format: 'wav', data: data.slice(data.indexOf(',') + 1) },
-  }
-}
-
 const fieldsPrompt =
   '只输出 JSON 对象，字段 title 简短标题，category 美食/饮品/灵感/回忆，ingredients 食材数组，steps 做法数组，feeling 原文明确表达的感受，venueName 明确写出或可读招牌上的店名，description 简短客观描述。不确定的内容留空，不推断口味、评分或店名。'
 const prompts = {
   photo: '辨认照片里的菜品、食材和清晰可见的店名。' + fieldsPrompt,
   text:
     '整理这段生活记录。保留说话人的意思，只提取明确出现的内容。' + fieldsPrompt,
-  voice:
-    '逐字转写录音中的中文，只返回说话内容，不补写、总结或猜测。听不清或无内容则返回空字符串。',
 }
 const stringValue = (value, limit = 600) =>
   typeof value === 'string' ? value.trim().slice(0, limit) : ''
@@ -331,8 +274,7 @@ export async function requestDeviceAI({
   if (!config?.key || config.endpoint !== destination || config.model !== model)
     throw new Error('AI 设置已更改，请重新确认接收服务。')
   let content
-  if (kind === 'voice') content = [await audioPart(value)]
-  else if (kind === 'photo')
+  if (kind === 'photo')
     content = [
       {
         type: 'image_url',
@@ -392,7 +334,6 @@ export async function requestDeviceAI({
   const answer = stringValue(payload?.choices?.[0]?.message?.content, 32000)
   if (!answer || answer.includes(config.key))
     throw new Error('AI 服务没有返回可用结果。')
-  if (kind === 'voice') return { transcript: answer }
   let obj
   try {
     obj = JSON.parse(answer.replace(/^\s*```(?:json)?\s*|\s*```\s*$/giu, ''))

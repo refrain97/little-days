@@ -554,16 +554,15 @@ export function createEntry(fields = {}) {
     : extracted().category
   const sample =
     fields.isSample ?? String(fields.id || '').startsWith('sample-')
-  const source = ['text', 'photo', 'voice'].includes(fields.source)
+  const source = ['text', 'photo'].includes(fields.source)
     ? fields.source
-    : fields.audio
-      ? 'voice'
-      : fields.image
-        ? 'photo'
-        : 'text'
+    : fields.image
+      ? 'photo'
+      : 'text'
   const legacyPhoto =
     !sample &&
     source === 'photo' &&
+    fields.source !== 'voice' &&
     text &&
     !Object.hasOwn(fields, 'photoDescription')
   const enteredTaste = tastes.includes(fields.taste)
@@ -600,7 +599,6 @@ export function createEntry(fields = {}) {
     taste,
     favorite: fields.favorite === true,
     image: String(fields.image || ''),
-    audio: String(fields.audio || ''),
     ingredients: Array.isArray(fields.ingredients)
       ? fields.ingredients.map(String)
       : extracted().ingredients,

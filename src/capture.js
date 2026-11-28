@@ -1,14 +1,13 @@
 import { icon as stickerIcon } from './icons.js'
 import { breakfastKinds } from './breakfast-model.js'
-import { showEditor, usesMobileShell } from './dialog-viewport.js'
+import { closeEditor, showEditor, usesMobileShell } from './dialog-viewport.js'
 import {
   getAISettings,
   prepareJournalPhoto,
   readPhotoTextLocally,
   requestDeviceAI,
 } from './device-ai.js'
-import { blobDataUrl, dataMediaBinary } from './media-store.js'
-import { recordingType, startAudioRecorder } from './audio-recorder.js'
+import { dataMediaBinary } from './media-store.js'
 import { assetPath } from './paths.js'
 import {
   CATEGORIES,
@@ -58,7 +57,7 @@ export function openCapture({
       <div class="lc-scroll">
         <label class="lc-field lc-content"><span data-text-label>我的原话</span><textarea data-body rows="3" placeholder="记下此刻想说的话…"></textarea></label>
         <div class="lc-mode-strip"><div class="lc-modes" role="group" aria-label="记录方式">
-          <button type="button" data-mode="text">${icon('pen')}文字</button><button type="button" data-mode="photo">${icon('camera')}照片</button><button type="button" data-mode="voice">${icon('mic')}语音</button>
+          <button type="button" data-mode="text">${icon('pen')}文字</button><button type="button" data-mode="photo">${icon('camera')}照片</button>
         </div><label class="breakfast-tag"><input type="checkbox" data-breakfast-tag><span>${icon('sun', 16)}早餐</span></label></div>
         <div class="lc-photo-tools" hidden>
           <button type="button" data-pick-photo>${icon('photo', 23)}<span>从相册选择</span></button>
@@ -68,11 +67,7 @@ export function openCapture({
         <input type="file" accept="image/*" capture="environment" hidden data-camera>
         <div class="lc-picture" hidden><img alt="本条记录的照片"><button type="button" class="lc-media-clear" data-remove-image aria-label="移除照片">${icon('close', 15)}</button></div>
         <p class="lc-status" data-photo-status role="status" hidden></p>
-        <div class="lc-voice" hidden><div class="lc-rec-controls"><button type="button" class="lc-recorder" data-record-audio><span class="lc-mic-circle">${icon('mic', 21)}</span><span data-voice-label>开始录音</span><span data-timer></span></button><button type="button" class="lc-text-btn" data-import-audio>导入录音</button></div><p class="lc-hint" data-voice-hint></p></div>
-        <p class="lc-status" data-voice-status role="status" hidden></p>
-        <input type="file" accept="audio/*" hidden data-audio-file>
-        <div class="lc-player" hidden><audio controls preload="metadata"></audio><button type="button" class="lc-icon-btn" data-remove-audio aria-label="移除语音">${icon('close', 15)}</button></div>
-        <div class="lc-ai-actions" hidden><button type="button" data-ai-kind="photo">AI 识别照片</button><button type="button" data-ai-kind="voice">AI 转写录音</button><button type="button" data-ai-kind="text">AI 整理原话</button></div>
+        <div class="lc-ai-actions" hidden><button type="button" data-ai-kind="photo">AI 识别照片</button><button type="button" data-ai-kind="text">AI 整理原话</button></div>
         <div class="lc-ai-confirm" hidden><p data-ai-disclosure></p><div><button type="button" data-ai-cancel>取消</button><button type="button" data-ai-send>确认发送</button></div></div>
         <p class="lc-status" data-ai-status role="status" hidden></p>
         <div class="lc-attitudes" data-taste-row hidden><span class="lc-label">这次感觉</span><div class="lc-tastes" role="group" aria-label="这次的态度"></div></div>
@@ -119,17 +114,8 @@ export function openCapture({
     ? record.diningSource
     : defaultDiningSource || (defaultVenueName ? 'out' : '')
   const scopedDining = !editing && ['out', 'home'].includes(initialDining)
-  const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition
-  // Older Web Speech implementations may send audio to the browser vendor.
-  const Speech =
-    SpeechAPI && 'processLocally' in SpeechAPI.prototype ? SpeechAPI : null
-  const canRecord = Boolean(
-    navigator.mediaDevices?.getUserMedia && window.MediaRecorder,
-  )
   const opener = document.activeElement
-  let source = ['text', 'photo', 'voice'].includes(initialMode)
-    ? initialMode
-    : 'text'
+  let source = initialMode === 'photo' ? 'photo' : 'text'
   let category = record?.category || '回忆'
   let categoryChosen = Boolean(record?.category)
   let diningSource = ['home', 'out'].includes(initialDining)
@@ -152,10 +138,10 @@ export function openCapture({
     privateOnly || (record?.visibility ?? defaultVisibility) === 'private'
       ? 'private'
       : 'shared'
-  const previews = new Map()
+  let previewValue = ''
+  let previewUrl = ''
   let photo = record?.image || ''
   let photoThumbnail = null
-  let audio = record?.audio || ''
   let photoText = record?.photoDescription || ''
   const unverifiedOriginal =
     record?.originalTextUnverified ??
@@ -170,20 +156,8 @@ export function openCapture({
   let photoVersion = 0
   let photoBusy = false
   let photoJob = null
-  let hasTranscript = false
-  let stopping = null
-  let recorder = null
-  let stream = null
-  let recognition = null
-  let audioReady = null
-  let importedAudio = null
-  let recognitionDone = null
-  let starting = false
-  let listening = false
   let saving = false
   let disposed = false
-  let interval = 0
-  let timerStart = 0
   let computed = {}
   const date = new Date(record?.createdAt || Date.now())
   $('time').dateTime = date.toISOString()
@@ -317,7 +291,6 @@ export function openCapture({
       !scopedDining &&
       !editor.value.trim() &&
       !photo &&
-      !audio &&
       !rating
     const details = [blank ? '分类与备注' : category]
     if (diningCategories.includes(category)) {
@@ -374,11 +347,7 @@ export function openCapture({
   function updateTextLabel() {
     const historical =
       unverifiedOriginal && editor.value.trim() === (record?.text || '').trim()
-    $('[data-text-label]').textContent = historical
-      ? '原记录内容'
-      : source === 'voice'
-        ? '我的原话 · 语音转写'
-        : '我的原话'
+    $('[data-text-label]').textContent = historical ? '原记录内容' : '我的原话'
   }
   function refreshExtraction() {
     const ownText = editor.value.trim()
@@ -484,37 +453,25 @@ export function openCapture({
       b.setAttribute('aria-pressed', String(value === b.dataset.mode)),
     )
     $('.lc-photo-tools').hidden = value !== 'photo'
-    $('.lc-voice').hidden = value !== 'voice'
     renderAI()
-    if (value !== 'voice') showStatus('[data-voice-status]', '')
     updateTextLabel()
-    if (value !== 'voice' && listening) void stopRecording()
-  }
-  function displayMedia(element, value, kind) {
-    const previous = previews.get(element)
-    if (previous?.value === value) return
-    if (previous?.url) URL.revokeObjectURL(previous.url)
-    previews.delete(element)
-    if (value && value.startsWith('data:')) {
-      const { bytes, type } = dataMediaBinary(value, kind)
-      const url = URL.createObjectURL(new Blob([bytes], { type }))
-      element.src = url
-      previews.set(element, { value, url })
-    } else if (kind === 'image' && /^\/images\/[\w.-]+$/u.test(value)) {
-      element.src = assetPath(value)
-      previews.set(element, { value })
-    } else {
-      element.removeAttribute('src')
-      if (kind === 'audio') element.load()
-    }
   }
   function refreshMedia() {
-    const img = $('.lc-picture img'),
-      player = $('.lc-player audio')
-    displayMedia(img, photo, 'image')
-    displayMedia(player, audio, 'audio')
+    if (previewValue === photo) return
+    if (previewUrl) URL.revokeObjectURL(previewUrl)
+    previewValue = photo
+    previewUrl = ''
+    const img = $('.lc-picture img')
+    if (photo.startsWith('data:')) {
+      const { bytes, type } = dataMediaBinary(photo)
+      previewUrl = URL.createObjectURL(new Blob([bytes], { type }))
+      img.src = previewUrl
+    } else if (/^\/images\/[\w.-]+$/u.test(photo)) {
+      img.src = assetPath(photo)
+    } else {
+      img.removeAttribute('src')
+    }
     $('.lc-picture').hidden = !img.hasAttribute('src')
-    $('.lc-player').hidden = !player.hasAttribute('src')
   }
   async function addPhoto(file) {
     if (!file) return
@@ -575,39 +532,11 @@ export function openCapture({
     refreshExtraction()
   }
 
-  function updateVoice() {
-    const button = $('[data-record-audio]')
-    button.disabled = starting
-    button.classList.toggle('lc-active', listening)
-    $('.lc-mic-circle').innerHTML = icon(listening ? 'stop' : 'mic', 21)
-    $('[data-voice-label]').textContent = starting
-      ? '正在打开麦克风…'
-      : listening
-        ? '结束录音'
-        : !canRecord && !Speech
-          ? '选择音频文件'
-          : audio
-            ? '重新录音'
-            : '开始录音'
-    $('[data-import-audio]').hidden = !canRecord && !Speech
-    $('[data-import-audio]').disabled = listening || starting
-    $('[data-voice-hint]').textContent =
-      !canRecord && !Speech
-        ? '可导入录音，也可以在原话输入框使用系统键盘听写。'
-        : '最长两分钟；也可以点原话输入框，用系统键盘听写。'
-    if (!listening) $('[data-timer]').textContent = ''
-    renderAI()
-  }
-  function releaseMic() {
-    stream?.getTracks().forEach((track) => track.stop())
-    stream = null
-  }
   const aiMaterial = (kind) =>
-    kind === 'text' ? editor.value.trim() : kind === 'photo' ? photo : audio
+    kind === 'text' ? editor.value.trim() : photo
   const aiLabels = {
     text: '上方原话',
     photo: '这张压缩照片',
-    voice: '这段录音',
   }
   function cancelAI() {
     activeAI?.abort()
@@ -641,8 +570,7 @@ export function openCapture({
         !config.configured ||
         !aiMaterial(kind) ||
         (kind !== 'text' && kind !== source) ||
-        Boolean(aiConsent) ||
-        listening
+        Boolean(aiConsent)
     }
     $('.lc-ai-actions').hidden = buttons.every((button) => button.hidden)
     $('.lc-ai-confirm').hidden = !aiConsent
@@ -720,20 +648,11 @@ export function openCapture({
           result.title ||
           result.venueName ||
           result.ingredients.join('、')
-      } else if (selection.kind === 'text') {
-        aiWords = { original: selection.value, fields: result }
       } else {
-        if (!editor.value.includes(result.transcript))
-          editor.value += (editor.value.trim() ? '\n' : '') + result.transcript
-        hasTranscript = true
+        aiWords = { original: selection.value, fields: result }
       }
       refreshExtraction()
-      showStatus(
-        '[data-ai-status]',
-        selection.kind === 'voice'
-          ? '录音转写已填入，请核对原话。'
-          : '已整理，展开「微调」可查看。',
-      )
+      showStatus('[data-ai-status]', '已整理，展开「微调」可查看。')
     } catch (error) {
       if (!disposed && aiConsent === selection)
         showStatus(
@@ -751,261 +670,20 @@ export function openCapture({
       }
     }
   }
-  $('[data-import-audio]').onclick = () => $('[data-audio-file]').click()
-  function launchSpeech() {
-    if (!Speech) return
-    const speech = new Speech()
-    speech.processLocally = true
-    speech.lang = 'zh-CN'
-    speech.continuous = true
-    speech.interimResults = true
-    recognition = speech
-    let settled
-    recognitionDone = new Promise((resolve) => {
-      settled = resolve
-    })
-    speech.onresult = (event) => {
-      if (disposed || speech !== recognition) return
-      let interim = ''
-      let complete = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript.trim()
-        if (event.results[i].isFinal) complete += transcript
-        else interim += transcript
-      }
-      if (complete) {
-        hasTranscript = true
-        editor.value +=
-          (editor.value && !/\s$/.test(editor.value) ? '\n' : '') + complete
-        refreshExtraction()
-      }
-      showStatus('[data-voice-status]', interim)
-    }
-    speech.onerror = (event) => {
-      if (disposed || speech !== recognition || event.error === 'aborted')
-        return
-      const message = recorder
-        ? '录音中。本机听写不可用，仍可保存原声。'
-        : event.error === 'not-allowed'
-          ? '请在浏览器中允许使用麦克风，或切换文字记录。'
-          : '暂时无法转写，请重试或输入文字。'
-      showStatus('[data-voice-status]', message)
-    }
-    speech.onend = () => {
-      settled()
-      if (disposed || speech !== recognition) return
-      recognition = null
-      if (!recorder && listening) {
-        listening = false
-        clearInterval(interval)
-        updateVoice()
-      }
-    }
-    try {
-      speech.start()
-    } catch {
-      recognition = null
-      settled()
-      if (!recorder) throw new Error('语音转写未启动，请重新尝试。')
-      showStatus(
-        '[data-voice-status]',
-        '录音中。本机听写不可用，仍可保存原声。',
-      )
-    }
-  }
-  async function startRecording() {
-    if (starting || listening) return
-    if (!canRecord && !Speech) {
-      $('[data-audio-file]').click()
-      return
-    }
-    cancelAI()
-    showStatus('[data-voice-status]', '')
-    starting = true
-    updateVoice()
-    try {
-      if (canRecord) {
-        const freshStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        })
-        if (disposed || saving || source !== 'voice') {
-          freshStream.getTracks().forEach((track) => track.stop())
-          return
-        }
-        stream = freshStream
-        recorder = startAudioRecorder(stream, (current, mimeType) => {
-          const chunks = []
-          current.ondataavailable = (e) => {
-            if (e.data.size) chunks.push(e.data)
-          }
-          let resolveAudio
-          audioReady = new Promise((resolve) => {
-            resolveAudio = resolve
-          })
-          current.onerror = () => {
-            if (!disposed)
-              showStatus(
-                '[data-voice-status]',
-                '录音中断，请检查麦克风后重试。',
-              )
-          }
-          current.onstop = async () => {
-            releaseMic()
-            try {
-              if (disposed || !chunks.length) return
-              const captured = new Blob(chunks, { type: chunks[0].type })
-              const type = await recordingType(
-                captured,
-                current.mimeType || mimeType,
-              )
-              const uri = await blobDataUrl(
-                captured.slice(0, captured.size, type),
-              )
-              if (!disposed) {
-                audio = uri
-                refreshMedia()
-              }
-            } catch {
-              if (!disposed)
-                showStatus(
-                  '[data-voice-status]',
-                  '录音读取失败，可以保留文字或重新录制。',
-                )
-            } finally {
-              if (recorder === current) recorder = null
-              resolveAudio()
-            }
-          }
-        })
-      }
-      launchSpeech()
-      listening = true
-      timerStart = Date.now()
-      $('[data-timer]').textContent = '0:00'
-      interval = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - timerStart) / 1000)
-        $('[data-timer]').textContent =
-          Math.floor(elapsed / 60) + ':' + String(elapsed % 60).padStart(2, '0')
-        if (elapsed >= 120) {
-          void stopRecording()
-          showStatus(
-            '[data-voice-status]',
-            '两分钟录音已结束，可以试听和保存。',
-          )
-        }
-      }, 500)
-    } catch (error) {
-      if (recorder?.state === 'recording') recorder.stop()
-      if (!recorder) audioReady = null
-      releaseMic()
-      if (!disposed)
-        showStatus(
-          '[data-voice-status]',
-          error.name === 'NotAllowedError'
-            ? '未能访问麦克风。请在浏览器中允许使用，或切换文字记录。'
-            : '麦克风暂不可用，请检查设备后重试，或切换文字记录。',
-        )
-    } finally {
-      starting = false
-      if (!disposed) updateVoice()
-    }
-  }
-  async function stopRecording() {
-    if (stopping) return stopping
-    stopping = finishRecording()
-    try {
-      await stopping
-    } finally {
-      stopping = null
-    }
-  }
-  async function finishRecording() {
-    listening = false
-    clearInterval(interval)
-    if (recognition) {
-      try {
-        recognition.stop()
-      } catch {
-        /* Already stopped. */
-      }
-    }
-    if (recorder?.state === 'recording') recorder.stop()
-    if (!disposed) {
-      updateVoice()
-      $('[data-record-audio]').disabled = true
-    }
-    await Promise.all([
-      audioReady,
-      recognitionDone &&
-        Promise.race([
-          recognitionDone,
-          new Promise((resolve) => setTimeout(resolve, 950)),
-        ]),
-    ])
-    if (!disposed) {
-      updateVoice()
-    }
-  }
-  $('[data-record-audio]').onclick = () => {
-    void (listening ? stopRecording() : startRecording())
-  }
-  async function importAudio(file) {
-    if (!file) return
-    if (file.size > 6 * 1024 * 1024) {
-      showStatus('[data-voice-status]', '请选择 6 MB 以内的短录音。')
-      return
-    }
-    try {
-      const type = await recordingType(file, '', file.name)
-      const uri = await blobDataUrl(file.slice(0, file.size, type))
-      if (disposed) return
-      audio = uri
-      refreshMedia()
-      updateVoice()
-      showStatus('[data-voice-status]', '录音已准备好，可以试听或保存。')
-      renderAI()
-    } catch {
-      if (!disposed)
-        showStatus('[data-voice-status]', '音频读取失败，请重新选择。')
-    }
-  }
-  $('[data-audio-file]').onchange = (event) => {
-    const [file] = event.target.files
-    event.target.value = ''
-    importedAudio = importAudio(file)
-  }
-  $('[data-remove-audio]').onclick = () => {
-    cancelAI()
-    audio = ''
-    refreshMedia()
-    updateVoice()
-    showStatus('[data-voice-status]', '')
-  }
   all('[data-mode]').forEach((b) => (b.onclick = () => setMode(b.dataset.mode)))
   editor.addEventListener('input', refreshExtraction)
   function cleanup() {
     if (disposed) return
     disposed = true
     cancelAI()
-    clearInterval(interval)
-    try {
-      recognition?.abort()
-    } catch {
-      /* Already stopped. */
-    }
-    if (recorder?.state === 'recording') recorder.stop()
-    releaseMic()
-    $('.lc-player audio').pause()
-    for (const preview of previews.values())
-      if (preview.url) URL.revokeObjectURL(preview.url)
-    previews.clear()
+    if (previewUrl) URL.revokeObjectURL(previewUrl)
     dialog.remove()
     document.body.classList.remove('lc-open')
     activeDialog = null
     if (opener?.isConnected) opener.focus({ preventScroll: true })
   }
   function close() {
-    if (!saving) dialog.close()
+    if (!saving) closeEditor(dialog)
   }
   dialog.addEventListener('close', cleanup, { once: true })
   dialog.addEventListener('cancel', (event) => {
@@ -1033,9 +711,6 @@ export function openCapture({
     showStatus('.lc-error', '')
     try {
       if (photoBusy) await photoJob
-      if (importedAudio) await importedAudio
-      if (stopping || listening || recorder || recognition)
-        await stopRecording()
       const savedVenue =
         diningCategories.includes(category) && diningSource === 'out'
           ? venueName.trim()
@@ -1048,7 +723,6 @@ export function openCapture({
       if (
         !editor.value.trim() &&
         !photo &&
-        !audio &&
         !title.value.trim() &&
         !notes.value.trim() &&
         !isVisit
@@ -1057,7 +731,7 @@ export function openCapture({
           '.lc-error',
           samePrefilledVenue
             ? '给这次探店打个分，或记下这次的感受吧。'
-            : '写一句话、拍张照片，或留一段语音吧。',
+            : '写一句话，或拍张照片吧。',
         )
         $('.lc-scroll').inert = false
         if (!usesMobileShell()) editor.focus()
@@ -1075,11 +749,7 @@ export function openCapture({
           title.value.trim() ||
           computed.title ||
           savedVenue ||
-          (photo
-            ? '随手拍'
-            : audio
-              ? '一段语音'
-              : notes.value.trim().slice(0, 22)),
+          (photo ? '随手拍' : notes.value.trim().slice(0, 22)),
         category,
         text,
         isBreakfast: breakfastTag.checked,
@@ -1095,23 +765,15 @@ export function openCapture({
         diningSource: diningCategories.includes(category) ? diningSource : '',
         venueName: savedVenue,
         image: photo,
-        audio,
-        source:
-          source === 'photo' && photo
-            ? 'photo'
-            : audio || hasTranscript
-              ? 'voice'
-              : photo
-                ? 'photo'
-                : 'text',
+        source: photo ? 'photo' : 'text',
       })
       await onSave?.(photoThumbnail ? { ...entry, photoThumbnail } : entry)
-      dialog.close()
+      closeEditor(dialog)
     } catch (error) {
       showStatus(
         '.lc-error',
         error?.name === 'QuotaExceededError'
-          ? '设备存储空间不足，请缩短录音或更换小一些的照片。'
+          ? '设备存储空间不足，请腾出空间或选择小一些的照片。'
           : error?.message || '这条记录未能保存，请重试。',
       )
     } finally {
@@ -1126,7 +788,6 @@ export function openCapture({
   document.body.append(dialog)
   document.body.classList.add('lc-open')
   setMode(source)
-  updateVoice()
   refreshMedia()
   refreshExtraction()
   showEditor(dialog, $('.lc-scroll'), source === 'text' ? editor : null)

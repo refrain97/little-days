@@ -1,3 +1,8 @@
+import {
+  legacyRecordingFile,
+  migrateSharedDocument,
+  migrateSyncState,
+} from './legacy-sync.js'
 import { createSyncState, isFineGrainedToken } from './sync-state.js'
 
 const DAY = 86400000
@@ -7,16 +12,14 @@ const renewTokenText =
   'GitHub Token 已过期或失效。本机记录已保留，更新 Token 并验证后会自动补传。'
 const fineTokenText =
   '请使用以 github_pat_ 开头、仅授权该私库的 Fine-grained PAT。更新后会自动同步本机更改。'
-const signature = { format: 'little-days-shared', version: 1 }
+const signature = { format: 'little-days-shared', version: 2 }
+const previousSignature = { ...signature, version: 1 }
 const groups = ['entries', 'places', 'freetime', 'breakfast']
 const groupSet = new Set(groups)
 const windows = {
   thumb: /^shared\/thumbs\/[0-9a-f]{40}\.jpg$/,
   photo: /^shared\/photos\/[0-9a-f]{40}\.jpg$/,
-  audio: /^shared\/audio\/[0-9a-f]{40}\.bin$/,
 }
-const audioTypes =
-  /^(?:audio\/[\w.+-]+|video\/(?:mp4|webm)|application\/(?:ogg|octet-stream))(?:;[\w.+="-]+)*$/i
 const uid = () =>
   globalThis.crypto?.randomUUID?.() ||
   Math.random().toString(36).slice(2) + Date.now().toString(36)
@@ -26,7 +29,7 @@ const keyFor = (kind, id) => kind + '/' + encodeURIComponent(id)
 const keyOf = (item) => keyFor(item.kind, item.id)
 const jsonPath = (key) => 'shared/' + key + '.json'
 const forbidden =
-  /^(?:__proto__|constructor|prototype|image|audio|photoKey|thumbKey|audioKey|cloudPhotoPath|cloudThumbPath|cloudAudioPath|githubToken|accessToken|token|apiKey|secret|password|credential|authorization|aiConfig|localAiConfig)$/i
+  /^(?:__proto__|constructor|prototype|image|audio(?:Key|Path|Type|Blob|Data|Base64|MimeType)?|photoKey|thumbKey|cloudPhotoPath|cloudThumbPath|cloudAudioPath|githubToken|accessToken|token|apiKey|secret|password|credential|authorization|aiConfig|localAiConfig)$/i
 const bucketKey = (c) => (c.owner + '/' + c.repo).toLowerCase() + '@' + c.branch
 const safely = (s) => String(s ?? '').trim()
 function cleanTree(value) {
@@ -85,17 +88,10 @@ function validateEntity(kind, id, data) {
   return cleanTree(data)
 }
 function localDigest(e) {
-  return e
-    ? canonical([
-        e.data,
-        e.photoKey || '',
-        e.audioKey || '',
-        ...(e.thumbKey ? [e.thumbKey] : []),
-      ])
-    : ''
+  return e ? canonical([e.data, e.photoKey || '', e.thumbKey || '']) : ''
 }
 function emptyWire(data) {
-  return { data, photoPath: '', audioPath: '', audioType: '' }
+  return { data, photoPath: '' }
 }
 // A stamp is a single per-actor choice, including a null stamp that records removal.
 // Independent actors commute. Concurrent writes for the same actor choose one whole stamp.
@@ -308,7 +304,7 @@ function validLayout(items) {
       !fileKey.test(item.path) &&
       !windows.photo.test(item.path) &&
       !windows.thumb.test(item.path) &&
-      !windows.audio.test(item.path) &&
+      !legacyRecordingFile.test(item.path) &&
       !trashPath.test(item.path)
     )
       return false
@@ -386,12 +382,15 @@ async function inspect(
   }
   if (inventory?.markerSha !== files.get(marker)) {
     const sig = await jsonBlob(api, files.get(marker))
+    if (equal(sig, previousSignature))
+      return { head, tree: commit.tree.sha, files, legacy: true }
     if (!equal(sig, signature))
       throw new Error('共享仓库标记无效，请检查连接的仓库。')
   }
   return { head, tree: commit.tree.sha, files }
 }
-function inventoryOf({ head, tree, files }) {
+function inventoryOf({ head, tree, files, legacy }) {
+  if (legacy) return null
   return { head, tree, files: [...files], markerSha: files.get(marker) }
 }
 async function putBlob(api, base64) {
@@ -461,7 +460,6 @@ function trashSummary(path, sha, doc) {
     archivedAt: new Date(date).toISOString(),
     expiresAt: new Date(date + retain).toISOString(),
     photoPath: doc.record?.photoPath || '',
-    audioPath: doc.record?.audioPath || '',
     thumbPath: doc.record?.thumbPath || '',
   }
 }
@@ -473,39 +471,25 @@ function wireFrom(doc, kind, id) {
     throw new Error('共享文件的编号或版本无效。')
   const data = validateEntity(kind, id, doc.data)
   if (
-    (kind !== 'entries' && (doc.photoPath || doc.thumbPath || doc.audioPath)) ||
+    (kind !== 'entries' && (doc.photoPath || doc.thumbPath)) ||
     (doc.photoPath && !windows.photo.test(doc.photoPath)) ||
-    (doc.thumbPath && (!doc.photoPath || !windows.thumb.test(doc.thumbPath))) ||
-    (doc.audioPath &&
-      (!windows.audio.test(doc.audioPath) || !audioTypes.test(doc.audioType)))
+    (doc.thumbPath && (!doc.photoPath || !windows.thumb.test(doc.thumbPath)))
   )
     throw new Error('共享附件的路径或格式无效。')
   return {
     data,
     ...(doc.thumbPath ? { thumbPath: doc.thumbPath } : {}),
     photoPath: doc.photoPath || '',
-    audioPath: doc.audioPath || '',
-    audioType: doc.audioPath ? doc.audioType : '',
   }
 }
 function mediaBytes(uri, kind) {
   if (typeof uri !== 'string') throw new Error('共享附件暂时无法读取。')
   const header = uri.slice(0, uri.indexOf(','))
   const match = /^data:(.+);base64$/i.exec(header)
-  if (
-    !match ||
-    (kind !== 'audio'
-      ? !/^image\/jpeg$/i.test(match[1])
-      : !audioTypes.test(match[1]))
-  )
+  if (!match || !/^image\/jpeg$/i.test(match[1]))
     throw new Error('共享附件格式未受支持。')
   const bytes = uri.slice(header.length + 1)
-  const max =
-    kind === 'thumb'
-      ? 40 * 1024
-      : kind === 'photo'
-        ? 256 * 1024
-        : 6 * 1024 * 1024
+  const max = (kind === 'thumb' ? 40 : 256) * 1024
   if (
     !bytes ||
     bytes.length > Math.ceil(max / 3) * 4 ||
@@ -513,7 +497,38 @@ function mediaBytes(uri, kind) {
     !/^[A-Za-z0-9+/]+={0,2}$/.test(bytes)
   )
     throw new Error('共享附件超出大小限制或内容无效。')
-  return { bytes, type: match[1] }
+  return bytes
+}
+// Move v1's current branch and its restorable history to the photo-only format in
+// one fast-forward. Older clients reject the new marker; a concurrent writer makes
+// the entire migration retry from the new head. Recording blobs are never fetched.
+async function upgradeSharedSpace(api, config, remote, now) {
+  const changes = new Map()
+  for (const [path, sha] of remote.files) {
+    if (
+      legacyRecordingFile.test(path) ||
+      (trashPath.test(path) && !withinRetention(path, now))
+    ) {
+      changes.set(path, null)
+      continue
+    }
+    if (!fileKey.test(path) && !trashPath.test(path)) continue
+    const doc = await jsonBlob(api, sha)
+    const clean = migrateSharedDocument(doc)
+    if (trashPath.test(path)) {
+      const meta = trashSummary(path, sha, clean)
+      wireFrom(clean.record, meta.kind, meta.entityId)
+    } else {
+      const key = keyFromPath(path)
+      wireFrom(clean, kindForKey(key), idForKey(key))
+    }
+    if (!equal(doc, clean))
+      changes.set(path, await putBlob(api, encodeJSON(clean)))
+  }
+  changes.set(marker, await putBlob(api, encodeJSON(signature)))
+  return atomicWrite(api, config, remote, changes, '更新小日子手账格式', () =>
+    verify(api, config),
+  )
 }
 function parseSnapshot(snap) {
   const entities = new Map(),
@@ -533,6 +548,7 @@ function parseSnapshot(snap) {
 
 function freshState() {
   return {
+    version: 2,
     base: {},
     published: [],
     pending: [],
@@ -597,7 +613,12 @@ async function processCommit({
   prune,
   restoring,
 }) {
-  const remote = await inspect(api, config, { inventory: state.inventory })
+  let remote = await inspect(api, config, { inventory: state.inventory })
+  if (remote.legacy) {
+    remote = await upgradeSharedSpace(api, config, remote, now)
+    // An expired v1 archive can have been the last reference to a photograph.
+    prune = true
+  }
   const { files } = remote
   const changes = new Map(),
     documents = new Map(),
@@ -658,21 +679,13 @@ async function processCommit({
           )
       : null
     if (wire)
-      for (const [kind, path] of [
-        ['photo', wire.photoPath],
-        ['thumb', wire.thumbPath],
-        ['audio', wire.audioPath],
-      ])
+      for (const path of [wire.photoPath, wire.thumbPath])
         if (
           path &&
           (!files.has(path) ||
             files.get(path) !== path.match(/[a-f0-9]{40}/)[0])
         )
-          throw new Error(
-            kind !== 'audio'
-              ? '共享照片文件缺失或版本不符。'
-              : '共享录音文件缺失或版本不符。',
-          )
+          throw new Error('共享照片文件缺失或版本不符。')
     known.set(key, wire)
     return wire
   }
@@ -680,48 +693,33 @@ async function processCommit({
   async function materialize(entity, base) {
     if (!entity) return null
     const wire = emptyWire(entity.data)
-    for (const kind of ['photo', 'thumb', 'audio']) {
+    for (const kind of ['photo', 'thumb']) {
       const localKey = entity[kind + 'Key']
       if (!localKey) continue
       const ref =
         base?.[kind + 'Key'] === localKey ? base.wire[kind + 'Path'] : localKey
       if (windows[kind].test(ref || '') && files.has(ref)) {
         wire[kind + 'Path'] = ref
-        if (kind === 'audio')
-          wire.audioType =
-            base?.wire.audioType ||
-            entity.audioType ||
-            'application/octet-stream'
         continue
       }
       const cacheKey = keyOf(entity) + '/' + kind + '/' + localKey
       let attachment = attachCache.get(cacheKey)
       if (!attachment) {
-        const method = {
-          photo: adapter.readPhoto,
-          thumb: adapter.readThumb,
-          audio: adapter.readAudio,
-        }[kind]
+        const method = kind === 'photo' ? adapter.readPhoto : adapter.readThumb
         if (!method) throw new Error('设备暂时无法提供共享附件。')
-        const { bytes, type } = mediaBytes(
-          await method.call(adapter, entity),
-          kind,
-        )
+        const bytes = mediaBytes(await method.call(adapter, entity), kind)
         const sha = await putBlob(api, bytes)
         const path =
-          kind === 'audio'
-            ? 'shared/audio/' + sha + '.bin'
-            : 'shared/' +
-              (kind === 'photo' ? 'photos' : 'thumbs') +
-              '/' +
-              sha +
-              '.jpg'
-        attachment = { sha, path, type }
+          'shared/' +
+          (kind === 'photo' ? 'photos' : 'thumbs') +
+          '/' +
+          sha +
+          '.jpg'
+        attachment = { sha, path }
         attachCache.set(cacheKey, attachment)
       }
       changes.set(attachment.path, attachment.sha)
       wire[kind + 'Path'] = attachment.path
-      if (kind === 'audio') wire.audioType = attachment.type
     }
     return wire
   }
@@ -890,7 +888,6 @@ async function processCommit({
     const mark = (wire) => {
       if (wire?.photoPath) used.add(wire.photoPath)
       if (wire?.thumbPath) used.add(wire.thumbPath)
-      if (wire?.audioPath) used.add(wire.audioPath)
     }
     for (const key of remoteKeys) if (!next.has(key)) mark(await getWire(key))
     for (const row of next.values()) mark(row.target)
@@ -898,12 +895,7 @@ async function processCommit({
       if (changes.get(path) !== null) mark(await trashInfo(path))
     for (const { doc } of archives) mark(doc.record)
     for (const p of files.keys())
-      if (
-        (windows.photo.test(p) ||
-          windows.thumb.test(p) ||
-          windows.audio.test(p)) &&
-        !used.has(p)
-      )
+      if ((windows.photo.test(p) || windows.thumb.test(p)) && !used.has(p))
         changes.set(p, null)
   }
   const committed = await atomicWrite(
@@ -946,8 +938,6 @@ async function processCommit({
         data: target?.data || null,
         photoPath: target?.photoPath || '',
         thumbPath: target?.thumbPath || '',
-        audioPath: target?.audioPath || '',
-        audioType: target?.audioType || '',
         keepPhoto:
           !!local?.photoKey &&
           !!target?.photoPath &&
@@ -957,16 +947,8 @@ async function processCommit({
           !!target?.thumbPath &&
           target.photoPath === row.localWire?.photoPath &&
           target.thumbPath === row.localWire?.thumbPath,
-        keepAudio:
-          !!local?.audioKey &&
-          !!target?.audioPath &&
-          target.audioPath === row.localWire?.audioPath,
         readPhoto: download(target?.photoPath, 'image/jpeg'),
         readThumb: download(target?.thumbPath, 'image/jpeg'),
-        readAudio: download(
-          target?.audioPath,
-          target?.audioType || 'application/octet-stream',
-        ),
         expected: local,
       })
       if (result === false) {
@@ -984,7 +966,6 @@ async function processCommit({
       wire: target,
       sha: changes.get(jsonPath(key)) || files.get(jsonPath(key)),
       photoKey: acknowledged?.photoKey || '',
-      audioKey: acknowledged?.audioKey || '',
       thumbKey: acknowledged?.thumbKey || '',
       localDigest: localDigest(acknowledged),
     }
@@ -1090,7 +1071,8 @@ export function createGitHubSync({
     }
   }
   async function readState(c) {
-    return (await storage.get('state:' + bucketKey(c))) || freshState()
+    const saved = await storage.get('state:' + bucketKey(c))
+    return saved ? migrateSyncState(saved) : freshState()
   }
   async function saveState(c, state) {
     await storage.set('state:' + bucketKey(c), state)

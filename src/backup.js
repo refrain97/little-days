@@ -47,15 +47,12 @@ const date = (x) => {
 function requireValue(ok, field) {
   if (!ok) throw new Error('备份中的' + field + '无效，未能恢复。')
 }
-function validMedia(value, kind) {
+function validPhoto(value) {
   if (value === '') return true
   if (!string(value)) return false
-  if (
-    kind === 'image' &&
-    /^\/images\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp)$/i.test(value)
-  )
+  if (/^\/images\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp)$/i.test(value))
     return true
-  if (!dataMediaType(value, kind)) return false
+  if (!dataMediaType(value)) return false
   const start = value.indexOf(',') + 1
   const length = value.length - start
   if (!length || length % 4) return false
@@ -121,10 +118,7 @@ function checkRecords(records) {
           bool(r.originalTextUnverified)),
       '照片描述',
     )
-    requireValue(
-      validMedia(r.image, 'image') && validMedia(r.audio, 'audio'),
-      '照片或录音',
-    )
+    requireValue(validPhoto(r.image), '照片')
   }
 }
 function checkPlans(plans) {
@@ -400,9 +394,7 @@ export function validatePrivateBackup(data) {
     throw new Error('请选择「小日子」导出的私人备份 JSON。')
   checkRecords(data.records)
   requireValue(
-    data.records.every(
-      (row) => !row.image || dataMediaType(row.image, 'image'),
-    ),
+    data.records.every((row) => !row.image || dataMediaType(row.image)),
     '私人备份照片文件',
   )
   const archived = checkPlans(data.plans)
@@ -454,7 +446,7 @@ export async function exportPrivateBackup() {
 }
 
 async function bundledPhoto(path) {
-  if (!validMedia(path, 'image')) throw new Error('备份中的内置照片路径无效。')
+  if (!validPhoto(path)) throw new Error('备份中的内置照片路径无效。')
   const response = await fetch(assetPath(path), {
     credentials: 'omit',
     redirect: 'error',

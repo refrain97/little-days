@@ -39,7 +39,6 @@ const listeners = new Set()
 const newToken = () =>
   globalThis.crypto?.randomUUID?.() ||
   Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
-const kinds = ['image', 'audio']
 const recordStores = ['records', 'media', 'settings', 'plans', 'places']
 const lock = (fn) =>
   globalThis.navigator?.locks
@@ -99,32 +98,30 @@ export function announce(event = 'updated', local = false) {
 // exact version, including when an edit is racing a lazy thumbnail rebuild.
 const thumbnailKey = (imageRef) => imageRef + '/thumbnail'
 
-function deleteMedia(media, ref, kind) {
+function deletePhoto(media, ref) {
   if (!isLocalMedia(ref)) return
   media.delete(ref)
-  if (kind === 'image') media.delete(thumbnailKey(ref))
+  media.delete(thumbnailKey(ref))
 }
 
 export function writeSplit(stores, entry, previous, paths = {}) {
   const { records, media } = stores
   const meta = { ...entry }
-  for (const kind of kinds) {
-    const value = entry[kind] || ''
-    const prior = previous?.[kind]
-    const cloudPath = kind === 'image' ? 'cloudPhotoPath' : 'cloudAudioPath'
-    if (paths[cloudPath]) meta[cloudPath] = paths[cloudPath]
-    else if (prior && prior === value && previous?.[cloudPath])
-      meta[cloudPath] = previous[cloudPath]
-    if (prior === value && isLocalMedia(prior)) continue
+  const value = entry.image || ''
+  const prior = previous?.image
+  if (paths.cloudPhotoPath) meta.cloudPhotoPath = paths.cloudPhotoPath
+  else if (prior && prior === value && previous?.cloudPhotoPath)
+    meta.cloudPhotoPath = previous.cloudPhotoPath
+  if (value !== prior || value.startsWith('data:')) {
     const key = () =>
-      mediaPrefix + encodeURIComponent(entry.id) + '/' + kind + '/' + newToken()
+      mediaPrefix + encodeURIComponent(entry.id) + '/image/' + newToken()
     if (value.startsWith('data:')) {
-      meta[kind] = key()
-      // ArrayBuffer is also supported by ephemeral WebKit stores that reject Blob writes.
-      media.put(dataMediaBinary(value, kind), meta[kind])
+      meta.image = key()
+      // ArrayBuffer also works in ephemeral WebKit stores that reject Blob writes.
+      media.put(dataMediaBinary(value), meta.image)
     } else if (isLocalMedia(value)) {
-      // A newly created entry can reuse another record's media. Give it its own lifetime.
-      meta[kind] = key()
+      // A photo copied from another record has an independent lifetime.
+      meta.image = key()
       const ownerKey = value.slice(mediaPrefix.length).split('/')[0]
       const owner = records.get(decodeURIComponent(ownerKey))
       const copy = media.get(value)
@@ -137,10 +134,10 @@ export function writeSplit(stores, entry, previous, paths = {}) {
           media.transaction.abort()
           return
         }
-        media.put(copy.result, meta[kind])
+        media.put(copy.result, meta.image)
       }
     }
-    deleteMedia(media, prior, kind)
+    deletePhoto(media, prior)
   }
   if (paths.cloudThumbPath) meta.cloudThumbPath = paths.cloudThumbPath
   else if (
@@ -150,10 +147,7 @@ export function writeSplit(stores, entry, previous, paths = {}) {
   )
     meta.cloudThumbPath = previous.cloudThumbPath
   if (paths.thumbnail && isLocalMedia(meta.image))
-    media.put(
-      dataMediaBinary(paths.thumbnail, 'image'),
-      thumbnailKey(meta.image),
-    )
+    media.put(dataMediaBinary(paths.thumbnail), thumbnailKey(meta.image))
   records.put(meta)
   return meta
 }
@@ -178,8 +172,7 @@ export async function ackOutbox(revision) {
 function visibleRecord(row) {
   // Earlier notebooks may contain an external media link. Neither the view nor
   // the editor should turn a private repository URL into a public image request.
-  for (const kind of kinds)
-    if (row[kind] && !canDisplayMedia(row[kind])) row[kind] = ''
+  if (row.image && !canDisplayMedia(row.image)) row.image = ''
   return row
 }
 function storesFor(tx) {
@@ -191,7 +184,7 @@ function openDatabase() {
     if (!globalThis.indexedDB) return reject(storageUnavailable())
     let req
     try {
-      req = indexedDB.open('little-days', 5)
+      req = indexedDB.open('little-days', 6)
     } catch {
       return reject(storageUnavailable())
     }
@@ -211,11 +204,9 @@ function openDatabase() {
       if (!db.objectStoreNames.contains('records'))
         db.createObjectStore('records', { keyPath: 'id' })
       const records = tx.objectStore('records')
-      for (const path of [
-        'cloudPhotoPath',
-        'cloudThumbPath',
-        'cloudAudioPath',
-      ]) {
+      if (records.indexNames.contains('cloudAudioPath'))
+        records.deleteIndex('cloudAudioPath')
+      for (const path of ['cloudPhotoPath', 'cloudThumbPath']) {
         if (!records.indexNames.contains(path)) records.createIndex(path, path)
       }
       if (!db.objectStoreNames.contains('settings'))
@@ -224,22 +215,59 @@ function openDatabase() {
         db.createObjectStore('plans', { keyPath: 'id' })
       if (!db.objectStoreNames.contains('places'))
         db.createObjectStore('places', { keyPath: 'id' })
-      if (db.objectStoreNames.contains('media')) return
-      db.createObjectStore('media')
+      if (!db.objectStoreNames.contains('media')) db.createObjectStore('media')
       const stores = storesFor(tx)
-      // Upgrade in one transaction. At most one legacy record is decoded by this cursor at a time.
-      const cursor = stores.records.openCursor()
+      // All previous releases keyed attachments by owner/kind/version. A key-only
+      // scan also finds orphaned recordings without loading the photo library.
+      const keys = stores.media.openKeyCursor()
+      keys.onsuccess = () => {
+        const current = keys.result
+        if (!current) return
+        const id = current.key
+        const kind =
+          typeof id === 'string' && id.startsWith(mediaPrefix)
+            ? id.slice(mediaPrefix.length).split('/')[1]
+            : ''
+        if (kind === 'audio') stores.media.delete(id)
+        else if (kind !== 'image') {
+          // Inspect unusual historical keys only. Leave unrelated files untouched.
+          const value = stores.media.get(id)
+          value.onsuccess = () => {
+            if (
+              /^(?:audio\/|video\/(?:webm|mp4)|application\/(?:ogg|octet-stream))/i.test(
+                value.result?.type || '',
+              )
+            )
+              stores.media.delete(id)
+          }
+        }
+        current.continue()
+      }
+      const cursor = records.openCursor()
       cursor.onsuccess = () => {
         const current = cursor.result
         if (!current) return
         try {
-          if (kinds.some((k) => current.value[k]?.startsWith('data:')))
-            writeSplit(stores, current.value)
+          const row = current.value
+          const changed = stripLegacyRecording(row)
+          if (row.image?.startsWith('data:')) writeSplit(stores, row)
+          else if (changed) current.update(row)
           current.continue()
         } catch (error) {
           upgradeError = error
           tx.abort()
         }
+      }
+      // An interrupted migration from localStorage may have left a receipt with
+      // the old notebook serialized inside it. Convert that receipt atomically too.
+      const settings = tx.objectStore('settings')
+      const old = settings.get('legacy-import-receipt')
+      old.onsuccess = () => {
+        if (typeof old.result !== 'string') return
+        settings.put(
+          legacyReceipt(JSON.parse(old.result)),
+          'legacy-import-receipt',
+        )
       }
     }
     req.onsuccess = () => {
@@ -303,6 +331,34 @@ function entriesFromSnapshot(snapshot) {
       : row,
   )
 }
+// v5 and older backups used a transcript alongside an optional recording.
+function stripLegacyRecording(row) {
+  let changed = false
+  for (const key of Object.keys(row)) {
+    if (/^(?:audio|cloudAudio)/i.test(key)) {
+      delete row[key]
+      changed = true
+    }
+  }
+  if (row.source === 'voice') {
+    row.source = row.image ? 'photo' : 'text'
+    // A transcribed sentence is the user's own text, even beside a photo.
+    row.photoDescription ??= ''
+    changed = true
+  }
+  return changed
+}
+
+function legacyReceipt(sources) {
+  const normalized = sources.map(([key, value]) => {
+    if (key !== journalKey) return [key, value]
+    const records = JSON.parse(value)
+    for (const row of records) stripLegacyRecording(row)
+    return [key, JSON.stringify(records)]
+  })
+  return JSON.stringify(normalized.sort(([a], [b]) => a.localeCompare(b)))
+}
+
 function legacySnapshot() {
   try {
     const keys = [
@@ -369,9 +425,7 @@ async function initialize() {
   const sources = [...(journal || []), ...plans.raw].filter(
     ([, v]) => v !== null,
   )
-  const stamp = sources.length
-    ? JSON.stringify(sources.sort(([a], [b]) => a.localeCompare(b)))
-    : ''
+  const stamp = sources.length ? legacyReceipt(sources) : ''
   const tx = db.transaction(recordStores, 'readwrite')
   const done = transactionDone(tx),
     stores = storesFor(tx),
@@ -690,21 +744,18 @@ async function fullRecords(id, onSnapshot, acceptRecord) {
     rows = (id == null ? head.result : head.result ? [head.result] : [])
       .filter((row) => !acceptRecord || acceptRecord(row))
       .map(createEntry)
-    for (const row of rows)
-      for (const kind of kinds)
-        if (isLocalMedia(row[kind])) mediaRefs.push({ row, kind })
+    for (const row of rows) if (isLocalMedia(row.image)) mediaRefs.push(row)
     // Keep one binary attachment in flight within a consistent readonly snapshot.
     function readNext() {
-      const next = mediaRefs.pop()
-      if (!next) return
-      const { row, kind } = next
-      const req = stores.media.get(row[kind])
+      const row = mediaRefs.pop()
+      if (!row) return
+      const req = stores.media.get(row.image)
       req.onsuccess = () => {
         try {
-          if (!req.result) throw new Error('有一份照片或原声暂时无法读取。')
+          if (!req.result) throw new Error('有一张照片暂时无法读取。')
           if (req.result instanceof Blob)
-            oldBlobs.push({ row, kind, blob: req.result })
-          else row[kind] = binaryDataUrl(req.result)
+            oldBlobs.push({ row, blob: req.result })
+          else row.image = binaryDataUrl(req.result)
           readNext()
         } catch (error) {
           snapshotError = error
@@ -719,8 +770,7 @@ async function fullRecords(id, onSnapshot, acceptRecord) {
   } catch (error) {
     throw snapshotError || error
   }
-  for (const { row, kind, blob } of oldBlobs)
-    row[kind] = await blobDataUrl(blob)
+  for (const { row, blob } of oldBlobs) row.image = await blobDataUrl(blob)
   return rows
 }
 export async function readRecordWithMedia(id) {
@@ -841,8 +891,7 @@ export async function removeRecord(id) {
     stores = storesFor(tx)
   const req = stores.records.get(id)
   req.onsuccess = () => {
-    for (const kind of kinds)
-      deleteMedia(stores.media, req.result?.[kind], kind)
+    deletePhoto(stores.media, req.result?.image)
     stores.records.delete(id)
     if (req.result?.visibility === 'shared' && !req.result.isSample)
       markOutbox(tx)
@@ -1398,8 +1447,6 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
         const next = createEntry(value)
         if (paths.keepPhoto && current.result?.image)
           next.image = current.result.image
-        if (paths.keepAudio && current.result?.audio)
-          next.audio = current.result.audio
         stored = writeSplit(storesFor(tx), next, current.result, paths)
       } else if (value) {
         if (kind === 'breakfast') table.put(value, key)
@@ -1407,8 +1454,7 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
         stored = value
       } else {
         if (kind === 'entries')
-          for (const key of kinds)
-            deleteMedia(tx.objectStore('media'), current.result?.[key], key)
+          deletePhoto(tx.objectStore('media'), current.result?.image)
         if (kind === 'places' && current.result)
           suppressPlace(tx, current.result)
         table.delete(key)
@@ -1428,14 +1474,8 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
   return accepted ? { stored } : false
 }
 
-export async function readSharedAttachment(
-  id,
-  kind,
-  expectedRef,
-  thumbnail = false,
-) {
+export async function readSharedAttachment(id, expectedRef, thumbnail = false) {
   const db = await journalDatabase()
-  if (!kinds.includes(kind)) throw new Error('共享附件不可用。')
   const tx = db.transaction(['records', 'media']),
     read = tx.objectStore('records').get(id)
   let result, ref
@@ -1445,10 +1485,10 @@ export async function readSharedAttachment(
       !entry ||
       entry.isSample ||
       entry.visibility === 'private' ||
-      entry[kind] !== expectedRef
+      entry.image !== expectedRef
     )
       return
-    ref = entry[kind]
+    ref = entry.image
     if (isLocalMedia(ref)) result = tx.objectStore('media').get(ref)
   }
   await transactionDone(tx)
@@ -1467,23 +1507,20 @@ export async function readSharedAttachment(
 export async function readCachedAttachment(path, type) {
   const photo = /^shared\/photos\/[a-f0-9]{40}\.jpg$/.test(path)
   const thumb = /^shared\/thumbs\/[a-f0-9]{40}\.jpg$/.test(path)
-  if (!thumb && !photo && !/^shared\/audio\/[a-f0-9]{40}\.bin$/.test(path))
-    return null
+  if (!thumb && !photo) return null
   const db = await journalDatabase(),
     tx = db.transaction(['records', 'media'])
   const table = tx.objectStore('records'),
     media = tx.objectStore('media')
   const cursor = table
-    .index(
-      thumb ? 'cloudThumbPath' : photo ? 'cloudPhotoPath' : 'cloudAudioPath',
-    )
+    .index(thumb ? 'cloudThumbPath' : 'cloudPhotoPath')
     .openCursor(IDBKeyRange.only(path))
   let data
   cursor.onsuccess = () => {
     const next = cursor.result
     if (!next) return
     const row = next.value,
-      ref = row[photo || thumb ? 'image' : 'audio']
+      ref = row.image
     if (row.visibility !== 'shared' || row.isSample || !isLocalMedia(ref)) {
       next.continue()
       return

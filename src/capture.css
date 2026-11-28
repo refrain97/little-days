@@ -478,22 +478,10 @@ body.lc-open {
   border: 1px solid #a18d7e80;
   background: #fffbf5ee;
 }
-.lc-status,
-.lc-hint {
+.lc-status {
   margin: 6px 0 12px;
   font-size: 12px;
   color: var(--lc-muted);
-}
-.lc-voice {
-  padding: 13px;
-  border-radius: 13px;
-  background: #f5eae8;
-  margin-bottom: 15px;
-}
-.lc-rec-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .lc-text-btn {
   flex: none;
@@ -505,52 +493,6 @@ body.lc-open {
   font-size: 12px;
   text-decoration: underline;
   text-underline-offset: 3px;
-}
-.lc-recorder {
-  border: 0;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: 100%;
-  background: transparent;
-  color: var(--lc-accent);
-  font-size: 14px;
-  font-weight: 650;
-}
-.lc-mic-circle {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  background: var(--lc-accent);
-  color: #fff5e8;
-  border-radius: 50%;
-}
-.lc-active .lc-mic-circle {
-  background: #ab4e4f;
-}
-.lc-recorder [data-timer] {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
-.lc-voice .lc-hint {
-  margin: 7px 0 0;
-}
-.lc-player {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.lc-player audio {
-  flex: 1;
-  min-width: 0;
-  height: 38px;
-  max-width: 100%;
-}
-.lc-player .lc-icon-btn {
-  flex-shrink: 0;
 }
 @media (max-width: 600px) {
   .life-capture {

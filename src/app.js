@@ -22,7 +22,6 @@ import {
   toggleRecordFavorite,
   onExternalChange,
   observeLocalMedia,
-  mediaAttributes,
   readRecordWithMedia,
   readPlaceProfiles,
   putPlaceProfile,
@@ -49,7 +48,7 @@ import {
 import { privateBackupStatus } from './backup.js'
 import { icon, flower, flourish, kitchenSketch, notebookCat } from './icons.js'
 import { openCapture, attitudeLabel } from './capture.js'
-import { openQuickVoice } from './voice-quick.js'
+import { openQuickNote } from './quick-note.js'
 import {
   readPlans,
   putPlan,
@@ -98,8 +97,8 @@ const html = (value) =>
   )
 const action = (name, value = '') =>
   'data-action="' + name + '" data-value="' + html(value) + '"'
-const quickVoiceButton = () =>
-  `<button type="button" class="quick-voice-button" ${action('quick-voice')} aria-label="语音速记" title="语音速记">${icon('mic', 23)}</button>`
+const quickNoteButton = () =>
+  `<button type="button" class="quick-note-button" ${action('quick-note')} aria-label="一句话速记" title="一句话速记">${icon('pen', 20)}<span>速记</span></button>`
 const getPreference = (key, fallback) => {
   try {
     return JSON.parse(localStorage.getItem('little.days.' + key)) ?? fallback
@@ -414,7 +413,7 @@ function heading() {
     <div><div class="today">${icon('calendar', 15)}<time>${date}</time><i></i>${weekday}</div>
       <h1>${title}${flourish}</h1></div>
     <div class="header-actions">
-      ${quickVoiceButton()}
+      ${quickNoteButton()}
       <button class="new-entry" ${add}>${icon('plus', 19)}${label}</button>
     </div></header>`
 }
@@ -544,7 +543,7 @@ function card(entry, eager = false) {
     (!entry.image && excerpt
       ? ''
       : '<p>' +
-        html(excerpt || (entry.audio ? '听听这一刻的声音' : '查看这篇手记')) +
+        html(excerpt || '查看这篇手记') +
         '</p>') +
     (dining
       ? `<div class="card-rating">${stars}${taste}${sourceLabel(entry)}</div>`
@@ -987,7 +986,7 @@ function render({ resetScroll = false } = {}) {
             })) +
     '</div></main><nav class="bottom-nav" aria-label="手机导航">' +
     navMarkup(true) +
-    quickVoiceButton() +
+    quickNoteButton() +
     '</nav>'
   updateSyncNotice(cloud.status())
   updateBackupReminder()
@@ -1118,7 +1117,6 @@ function showDetail(id) {
       ${sourceLabel(entry, true)}
       ${stars || value ? `<div class="detail-stars">${stars}<span>${html(value)}</span></div>` : ''}
       <p class="detail-text">${html(entry.text)}</p>
-      ${entry.audio ? `<audio controls preload="metadata" ${mediaAttributes(entry.audio)}></audio>` : ''}
       ${note('照片识别', entry.photoDescription)}${ingredients}${steps}${note('当时的感受', entry.feeling)}${note('备注', entry.notes)}
       <div class="detail-footer record-detail-actions">${footer}
         <button class="remember-plan" ${action('memory-plan', entry.id)}>${icon('sprout', 15)}放进想做</button>
@@ -1134,7 +1132,7 @@ function confirmRemoval(id) {
   footer.insertAdjacentHTML(
     'afterend',
     `<div class="delete-confirm" role="group" aria-label="确认删除">
-    <p>${cloud.status().boundSpace && entries.find((e) => e.id === id)?.visibility === 'shared' ? '删除这条共享手记？同步后，两人都可以在回收站恢复，保留 30 天。' : '删除本机的这条手记及其照片、录音？'}</p>
+    <p>${cloud.status().boundSpace && entries.find((e) => e.id === id)?.visibility === 'shared' ? '删除这条共享手记？同步后，两人都可以在回收站恢复，保留 30 天。' : '删除本机的这条手记及其照片？'}</p>
     <button ${action('cancel-delete')}>保留手记</button><button class="confirm" ${action('delete', id)}>确认删除</button>
   </div>`,
   )
@@ -1522,8 +1520,8 @@ async function handleAction(key, value) {
     startEntry({ mode: value })
     return
   }
-  if (key === 'quick-voice') {
-    openQuickVoice({
+  if (key === 'quick-note') {
+    openQuickNote({
       venues: venues().map((place) => place.name),
       saveEntry: saveFromCapture,
       savePlan: async (fields) => {
@@ -1697,7 +1695,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     const els = [
       ...overlay.querySelectorAll(
-        'button:not([disabled]),input:not([disabled]),textarea,summary,select,audio,[tabindex="0"]',
+        'button:not([disabled]),input:not([disabled]),textarea,summary,select,[tabindex="0"]',
       ),
     ].filter((el) => el.getClientRects().length)
     const last = els.at(-1),

@@ -36,7 +36,7 @@ function controls(scope, privateOnly) {
 export function backupControls() {
   return `<section class="backup-tools" aria-labelledby="private-backup-title">
     <h3 id="private-backup-title">私人手记备份</h3>
-    <p>把「仅自己」的手记、照片、原声、早餐点子、清单及归档收进一个 JSON 文件。</p>
+    <p>把「仅自己」的手记、照片、早餐点子、清单及归档收进一个 JSON 文件。</p>
     <p data-private-backup-date></p>
     ${controls('private-backup', true)}
     <h3 id="backup-title">整本备份与迁移</h3>

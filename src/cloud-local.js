@@ -124,7 +124,6 @@ function entity(kind, row) {
       result.photoKey = row.image
       result.thumbKey = row.image
     }
-    if (isLocalMedia(row.audio)) result.audioKey = row.audio
   }
   return result
 }
@@ -198,12 +197,12 @@ export function createCloudAdapter() {
     )
       throw new Error('共享内容在读取时已改变，请重新同步。')
   }
-  async function attachment(expected, kind, thumbnail = false) {
+  async function attachment(expected, thumbnail = false) {
     if (expected.kind !== 'entries') return null
-    const key = kind === 'image' ? expected.photoKey : expected.audioKey
+    const key = expected.photoKey
     if (!key) return null
     await requireCurrent(expected)
-    let value = await readSharedAttachment(expected.id, kind, key, thumbnail)
+    let value = await readSharedAttachment(expected.id, key, thumbnail)
     if (typeof value === 'string' && builtInPhoto(value)) {
       const response = await fetch(assetPath(value))
       if (!response.ok) throw new Error('无法读取内置照片。')
@@ -212,12 +211,8 @@ export function createCloudAdapter() {
     }
     const data = thumbnail
       ? await blobDataUrl(value)
-      : kind === 'image'
-        ? await compressJournalPhoto(value)
-        : value instanceof Blob
-          ? await blobDataUrl(value)
-          : value
-    if (!dataMediaType(data, kind)) throw new Error('共享附件格式无效。')
+      : await compressJournalPhoto(value)
+    if (!dataMediaType(data)) throw new Error('共享附件格式无效。')
     await requireCurrent(expected)
     return data
   }
@@ -226,15 +221,12 @@ export function createCloudAdapter() {
     id,
     data,
     photoPath,
-    audioPath,
     thumbPath,
     readThumb,
     readPhoto,
-    readAudio,
     expected,
     keepThumb = false,
     keepPhoto = false,
-    keepAudio = false,
   }) {
     if (
       !['entries', 'places', 'freetime', 'breakfast'].includes(kind) ||
@@ -277,23 +269,17 @@ export function createCloudAdapter() {
       const wire = { ...data, id, visibility: 'shared' }
       if (kind === 'entries') {
         keepPhoto = Boolean(keepPhoto && photoPath && expected?.photoKey)
-        keepAudio = Boolean(keepAudio && audioPath && expected?.audioKey)
         thumbnail = thumbPath && !keepThumb ? await readThumb() : ''
-        if (thumbPath && !keepThumb && !dataMediaType(thumbnail, 'image'))
+        if (thumbPath && !keepThumb && !dataMediaType(thumbnail))
           throw new Error('共享缩略图还未完整读取。')
-        const image = photoPath && !keepPhoto ? await readPhoto() : '',
-          audio = audioPath && !keepAudio ? await readAudio() : ''
-        if (
-          (photoPath && !keepPhoto && !dataMediaType(image, 'image')) ||
-          (audioPath && !keepAudio && !dataMediaType(audio, 'audio'))
-        )
+        const image = photoPath && !keepPhoto ? await readPhoto() : ''
+        if (photoPath && !keepPhoto && !dataMediaType(image))
           throw new Error('云端附件尚未完整读取。')
         value = {
           ...pick(wire, recordFields),
           ...social(wire),
           isSample: false,
           image,
-          audio,
         }
       } else if (kind === 'freetime') {
         if (!Array.isArray(wire.completions) || !Array.isArray(wire.reopened))
@@ -327,9 +313,7 @@ export function createCloudAdapter() {
       cloudPhotoPath: photoPath,
       cloudThumbPath: thumbPath,
       thumbnail,
-      cloudAudioPath: audioPath,
       keepPhoto,
-      keepAudio,
     })
     return applied && { entity: applied.stored && entity(kind, applied.stored) }
   }
@@ -338,8 +322,7 @@ export function createCloudAdapter() {
     apply,
     ackOutbox,
     readCachedAttachment,
-    readThumb: (item) => attachment(item, 'image', true),
-    readPhoto: (item) => attachment(item, 'image'),
-    readAudio: (item) => attachment(item, 'audio'),
+    readThumb: (item) => attachment(item, true),
+    readPhoto: (item) => attachment(item),
   }
 }

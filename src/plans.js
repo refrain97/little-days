@@ -9,6 +9,7 @@ import {
   setPrivacyMarker,
   markOutbox,
 } from './storage.js'
+import { cleanReactions } from './stickers.js'
 import { authorship } from './journal.js'
 const prefix = 'xiaorizi.plans.v1:'
 const items = prefix + 'item:'
@@ -115,6 +116,9 @@ function withHistory(plan, history) {
       'updatedAt',
     ]),
     ...authorship(plan),
+    ...(visibility === 'shared' && plan.reactions?.length
+      ? { reactions: cleanReactions(plan.reactions) }
+      : {}),
     visibility,
     completions,
     reopened: rows.filter((row) => !row.doneAt),
@@ -339,6 +343,7 @@ export async function putPlan(fields = {}, { editing = false } = {}) {
       createdAt: current?.createdAt || now,
       updatedAt: now,
       ...localAuthor(current),
+      reactions: current?.reactions,
       completions: current?.completions || [],
       reopened: current?.reopened || [],
     })

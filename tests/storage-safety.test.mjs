@@ -39,3 +39,19 @@ test('an unavailable journal database rejects writes without touching legacy loc
     }
   }
 })
+
+test('venue totals follow the records visible on each device while shared grouping omits private visits', async () => {
+  const { createEntry, groupVenues } = await import('../src/journal.js')
+  const visit = (id, visibility, venueName, rating) => createEntry({
+    id, isSample: false, title: '面', category: '美食', diningSource: 'out',
+    venueName, visibility, rating, createdAt: '2026-05-01T12:30:00Z',
+  })
+  const shared = visit('together', 'shared', '松间面馆', 4)
+  const a = [shared, visit('a-private', 'private', '松间', 2), visit('secret', 'private', '另一家', 1)]
+  const b = [shared, visit('b-private', 'private', '松间面馆', 5)]
+  const profiles = [{id:'one', name:'松间面馆', aliases:['松间']}]
+  const totals = rows => rows.map(({name, rating, entries}) => [name, rating, entries.length]).sort()
+  assert.deepEqual(totals(groupVenues(a, profiles, {includePrivate:true})), [['另一家',1,1],['松间面馆',3,2]])
+  assert.deepEqual(totals(groupVenues(b, profiles, {includePrivate:true})), [['松间面馆',4.5,2]])
+  for (const device of [a,b]) assert.deepEqual(totals(groupVenues(device, profiles)), [['松间面馆',4,1]])
+})

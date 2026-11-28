@@ -1,3 +1,4 @@
+import { itemStamps } from './item-stamps.js'
 import { createBreakfastView } from './breakfast.js'
 import { breakfastPeriod } from './breakfast-model.js'
 import { fitDialogViewport, usesMobileShell } from './dialog-viewport.js'
@@ -31,13 +32,7 @@ import { photoAttributes, observeGallery } from './gallery.js'
 import { registerOfflineShell } from './offline-shell.js'
 import { bundledPhotoPath } from './paths.js'
 import { authorBadge, chooseAnimal, stickerActor } from './cloud-profile.js'
-import {
-  animals,
-  animalIcon,
-  stamps,
-  stampButtons,
-  cleanReactions,
-} from './stickers.js'
+import { animals, animalIcon, stampButtons, stampOptions } from './stickers.js'
 import { toggleStamp } from './storage.js'
 import { createCloudAdapter, onCloudLocalChange } from './cloud-local.js'
 import { createGitHubSync } from './github-sync.js'
@@ -198,7 +193,10 @@ const cloud = createGitHubSync({
       )
     } else if (!status.connected || (status.phase === 'idle' && !issue))
       lastSyncNotice = ''
-    if (status.connected) app.querySelector('.space-invite')?.remove()
+    const invitation = app.querySelector('.space-invite')
+    if (invitation) invitation.hidden = status.connected
+    const label = app.querySelector('[data-workspace-label]')
+    if (label) label.textContent = workspaceLabel(status)
   },
 })
 const pool = () => entries.filter((e) => showSamples || !e.isSample)
@@ -243,8 +241,14 @@ function updateSyncNotice(status) {
 
 function updateBackupReminder() {
   const reminder = app.querySelector('[data-private-backup-reminder]')
-  if (reminder) reminder.hidden = !privateBackupStatus(entries, plans).due
-  refreshPrivateBackupStatus(overlay, entries, plans)
+  if (reminder)
+    reminder.hidden = !privateBackupStatus(
+      entries,
+      plans,
+      Date.now(),
+      breakfast.ideas(),
+    ).due
+  refreshPrivateBackupStatus(overlay, entries, plans, breakfast.ideas())
 }
 function listSuggestions() {
   const ranked = recommendEntries(pool(), { limit: 12, meal })
@@ -299,7 +303,7 @@ function diningMode() {
     : 'home'
 }
 function venues() {
-  return groupVenues(pool(), placeProfiles)
+  return groupVenues(pool(), placeProfiles, { includePrivate: true })
 }
 function canonicalPlaceKey(name) {
   const key = venueKey(name)
@@ -340,6 +344,10 @@ function navMarkup(mobile = false) {
     )
     .join('')
 }
+function workspaceLabel(status) {
+  if (!status.connected) return '本机手记本'
+  return status.needsToken ? '双人云空间 · 待更新授权' : '双人云空间已连接'
+}
 function sidebar() {
   return (
     '<aside class="sidebar"><button class="brand" ' +
@@ -349,27 +357,29 @@ function sidebar() {
     '<span><strong>小日子</strong><em>Little Days</em></span></button><div class="sidebar-body"><div class="side-label">我的空间</div><nav aria-label="主导航">' +
     navMarkup() +
     '</nav><div class="side-rule"></div><div class="side-label category-label">手记分类</div><div class="side-categories">' +
-    CATEGORIES.map(
-      (c) =>
-        '<button ' +
-        action('side-cat', c) +
-        ' class="' +
-        (category === c && section === 'home' ? 'selected' : '') +
-        '"><i class="dot ' +
-        catClass(c) +
-        '"></i>' +
-        c +
-        '<small>' +
-        pool().filter((e) => e.category === c).length +
-        '</small></button>',
-    ).join('') +
+    ['全部', ...CATEGORIES, '收藏']
+      .map((c) => {
+        const chosen = category === c && section === 'home'
+        const count =
+          c === '全部'
+            ? pool().length
+            : pool().filter((e) =>
+                c === '收藏' ? e.favorite : e.category === c,
+              ).length
+        const mark =
+          c === '全部' || c === '收藏'
+            ? icon(c === '收藏' ? 'heart' : 'grid', 13)
+            : `<i class="dot ${catClass(c)}"></i>`
+        return `<button ${action('side-cat', c)} aria-pressed="${chosen}" class="${chosen ? 'selected' : ''}">${mark}${c}<small>${count}</small></button>`
+      })
+      .join('') +
     '</div></div><div class="side-bottom">' +
     kitchenSketch +
     '<button class="personal" ' +
     action('settings') +
     '><span class="avatar">' +
     animalIcon(stickerActor().animal, 33) +
-    '</span><span><b>我的小天地</b><small>本机手记本</small></span>' +
+    `</span><span><b>我的小天地</b><small data-workspace-label>${workspaceLabel(cloud.status())}</small></span>` +
     icon('settings', 17) +
     '</button></div></aside>'
   )
@@ -503,12 +513,19 @@ function hero(mode = diningMode()) {
   </section>`
 }
 function card(entry, eager = false) {
+  const dining = ['美食', '饮品'].includes(entry.category)
+  const stars = entry.rating
+    ? icon('star', 15) + '<b>' + entry.rating.toFixed(1) + '</b>'
+    : ''
+  const taste = entry.taste
+    ? '<span>' + html(attitudeLabel(entry.taste)) + '</span>'
+    : ''
   const excerpt = entry.text || entry.notes || entry.feeling
   const cover = entry.image
     ? img(entry.image, entry.title, { thumbnail: true, lazy: !eager })
     : `<div class="no-photo ${catClass(entry.category)}">${excerpt ? `<span class="paper-line">${html(excerpt)}</span>` : icon(catIcon(entry.category), 40)}</div>`
   return (
-    '<article class="entry-card"><button class="card-open" ' +
+    `<article class="entry-card" data-category="${html(entry.category)}"><button class="card-open" ` +
     action('detail', entry.id) +
     ' aria-label="查看' +
     html(entry.title) +
@@ -529,15 +546,10 @@ function card(entry, eager = false) {
       : '<p>' +
         html(excerpt || (entry.audio ? '听听这一刻的声音' : '查看这篇手记')) +
         '</p>') +
-    '<div class="card-rating">' +
-    (entry.rating
-      ? icon('star', 15) + '<b>' + entry.rating.toFixed(1) + '</b>'
+    (dining
+      ? `<div class="card-rating">${stars}${taste}${sourceLabel(entry)}</div>`
       : '') +
-    (entry.taste
-      ? '<span>' + html(attitudeLabel(entry.taste)) + '</span>'
-      : '') +
-    sourceLabel(entry) +
-    '</div></div></button><button class="heart-btn ' +
+    '</div></button><button class="heart-btn ' +
     (entry.favorite ? 'hearted' : '') +
     '" ' +
     action('favorite', entry.id) +
@@ -903,9 +915,10 @@ function viewPlan(value) {
   lockOverlay(
     `<button class="close-sheet" ${action('close')} aria-label="关闭">${icon('x', 19)}</button>
     ${source?.image ? `<div class="detail-photo">${img(source.image, source.title)}</div>` : ''}
-    <div class="detail-content plan-detail">
+    <div class="detail-content plan-detail" data-plan-view="${html(value)}">
       <div class="detail-meta"><small>${kind} · ${where} · ${plan.visibility === 'private' ? '仅自己' : '一起看'}</small></div>
       <h2>${html(title)}</h2>
+      ${itemStamps(plan, 'freetime')}
       ${date ? `<p class="detail-text">${icon('calendar', 14)} ${html(date)}</p>` : ''}
       ${source ? `<button class="plan-source" ${action('detail', source.id)}>${icon('book', 15)}<span>翻开原手记 · ${html(source.title)}</span>${icon('next', 14)}</button>` : ''}
       <div class="detail-footer">
@@ -950,10 +963,8 @@ function render({ resetScroll = false } = {}) {
     (section === 'home'
       ? `<aside class="local-status backup-nudge" data-private-backup-reminder hidden><span>私人内容已有两周未备份。</span><button type="button" ${action('private-backup')}>备份到文件</button></aside>`
       : '') +
-    (section === 'home' &&
-    !cloud.status().connected &&
-    !getPreference('spaceInviteDismissed', false)
-      ? `<aside class="space-invite"><button ${action('connect-space')}>${icon('book', 17)}连接双人云空间${icon('next', 13)}</button><button ${action('hide-space-invite')} aria-label="收起云空间提示">${icon('x', 14)}</button></aside>`
+    (section === 'home' && !getPreference('spaceInviteDismissed', false)
+      ? `<aside class="space-invite" ${cloud.status().connected ? 'hidden' : ''}><button ${action('connect-space')}>${icon('book', 17)}连接双人云空间${icon('next', 13)}</button><button ${action('hide-space-invite')} aria-label="收起云空间提示">${icon('x', 14)}</button></aside>`
       : '') +
     (storageError
       ? `<div class="storage-error" role="alert"><p>${html(storageError)}</p><button ${action('retry-storage')}>重新读取</button></div>`
@@ -1075,12 +1086,14 @@ function showDetail(id) {
     ${entry.steps.map((step) => `<li>${html(step)}</li>`).join('')}
   </ol></section>`
     : ''
-  const value = attitudeLabel(entry.taste)
-  const stars = entry.rating
-    ? Array.from({ length: 5 }, (_, i) =>
-        icon('star', 17, i < entry.rating ? 'lit' : ''),
-      ).join('') + `<b>${entry.rating.toFixed(1)}</b>`
-    : ''
+  const dining = ['美食', '饮品'].includes(entry.category)
+  const value = dining ? attitudeLabel(entry.taste) : ''
+  const stars =
+    dining && entry.rating
+      ? Array.from({ length: 5 }, (_, i) =>
+          icon('star', 17, i < entry.rating ? 'lit' : ''),
+        ).join('') + `<b>${entry.rating.toFixed(1)}</b>`
+      : ''
   const footer = fresh
     ? `<button ${action('cook', id)} class="solid">${icon('pen', 16)}记下我的尝试</button>`
     : `
@@ -1137,7 +1150,7 @@ function editPlace(place) {
     <div class="settings-inner"><h2>${place ? '店铺档案' : '新增店铺'}</h2>
     <form class="cloud-tools place-editor"><label class="cloud-field">店名<input name="name" required maxlength="120" value="${html(name)}"></label>
     <label class="cloud-field">别名<input name="aliases" placeholder="多个别名用顿号隔开" value="${html(profile?.aliases?.join('、'))}"></label>
-    <p>这是两人一起看的店铺档案。店铺评分和记录数来自共享手记。</p>
+    <p>店名与别名由两人共用。评分和记录数按这台设备可见的手记计算。</p>
     <div class="cloud-actions"><button type="submit" class="solid">保存档案</button>${profile ? '<button type="button" data-remove-place>删除档案</button>' : ''}</div>
     <p role="status" data-place-status></p></form></div>`,
     '店铺档案',
@@ -1194,6 +1207,23 @@ function editPlace(place) {
       }
     }
 }
+function refreshIdentity() {
+  const animal = stickerActor().animal
+  for (const button of overlay.querySelectorAll('.animal-picker button'))
+    button.setAttribute('aria-pressed', String(button.dataset.value === animal))
+  const iconSlot = overlay.querySelector('.settings-inner > .avatar')
+  if (iconSlot) iconSlot.innerHTML = animalIcon(animal, 34)
+  const selection = overlay.querySelector('[data-space-animal]')
+  if (selection) {
+    selection.value = animal
+    overlay.querySelector('[data-space-animal-preview]').innerHTML = animalIcon(
+      animal,
+      24,
+    )
+  }
+  render()
+  cloud.schedule()
+}
 function settings() {
   const row = (k, t, desc, value) =>
     '<label class="pref-row"><span><strong>' +
@@ -1238,8 +1268,12 @@ function settings() {
       '</div>',
     '我的小天地',
   )
-  bindCloudControls(overlay, cloud)
-  bindBackupControls(overlay, refreshNotebook, { entries, plans })
+  bindCloudControls(overlay, cloud, refreshIdentity)
+  bindBackupControls(overlay, refreshNotebook, {
+    entries,
+    plans,
+    breakfast: breakfast.ideas(),
+  })
   if (cloud.status().boundSpace)
     overlay.querySelector('[data-backup-confirm-note]').textContent =
       '恢复会替换本机手记与清单。下次同步也会把其中的共享更改和删除发给另一人。建议先导出当前备份。'
@@ -1314,18 +1348,9 @@ function chooseResponse(id) {
   const entry = entries.find((row) => row.id === id)
   if (entry?.visibility !== 'shared') return
   const actor = stickerActor()
-  const applied = cleanReactions(entry.reactions).filter((row) => row.stamp)
-  const mine = applied.find((row) => row.actor.id === actor.id)
   lockOverlay(
     `<button class="close-sheet" ${action('close')} aria-label="关闭">${icon('x', 19)}</button>
-    <div class="stamp-sheet"><h2>盖个小回应</h2><p>${html(entry.title)}</p><div class="stamp-options">
-    ${Object.entries(stamps)
-      .map(
-        ([key, label]) =>
-          `<button data-act-stamp="${key}" data-note="${html(id)}" aria-pressed="${mine?.stamp === key}">${icon({ taste: 'heart', aroma: 'sparkle', chef: 'chef', visit: 'store' }[key], 20)}${label}</button>`,
-      )
-      .join('')}</div>
-    ${applied.length ? `<ul>${applied.map((row) => `<li>${animalIcon(row.actor.id === actor.id ? actor.animal : row.actor.animal, 24)} ${html(row.actor.name)} · ${stamps[row.stamp]}</li>`).join('')}</ul>` : ''}</div>`,
+    <div class="stamp-sheet"><h2>盖个小回应</h2><p>${html(entry.title)}</p>${stampOptions(entry, actor, icon)}</div>`,
     '盖个小回应',
   )
 }
@@ -1353,17 +1378,7 @@ async function handleAction(key, value) {
   if (key === 'choose-stamp') return chooseResponse(value)
   if (key === 'pick-animal') {
     chooseAnimal(value)
-    render()
-    const picker = overlay.querySelector('.animal-picker')
-    for (const button of picker.querySelectorAll('button'))
-      button.setAttribute(
-        'aria-pressed',
-        String(button.dataset.value === value),
-      )
-    overlay.querySelector('.settings-inner > .avatar').innerHTML = animalIcon(
-      value,
-      34,
-    )
+    refreshIdentity()
     return
   }
   if (key === 'retry-storage') {
@@ -1446,14 +1461,17 @@ async function handleAction(key, value) {
     return
   }
   if (key === 'add-at-venue' || key === 'add-out') {
-    const name =
-      key === 'add-at-venue'
-        ? venues().find((place) => place.key === value)?.name
-        : ''
+    const place =
+      key === 'add-at-venue' ? venues().find((item) => item.key === value) : null
+    const privateVenue =
+      place &&
+      !place.profile &&
+      place.entries.every((entry) => entry.visibility === 'private')
     startEntry({
       mode: 'text',
       defaultDiningSource: 'out',
-      defaultVenueName: name || '',
+      defaultVenueName: place?.name || '',
+      defaultVisibility: privateVenue ? 'private' : 'shared',
     })
     return
   }
@@ -1603,7 +1621,21 @@ document.addEventListener('click', (event) => {
   }
   const stamp = event.target.closest('[data-act-stamp]')
   if (stamp) {
-    respondToEntry(stamp).catch((e) => toast(e.message))
+    const { stampKind, note, actStamp } = stamp.dataset
+    if (stampKind === 'breakfast')
+      breakfast.respond(note, actStamp).catch((e) => toast(e.message))
+    else if (stampKind === 'freetime') {
+      const view = stamp.closest('[data-plan-view]')?.dataset.planView || note
+      toggleStamp(note, actStamp, 'freetime')
+        .then(async () => {
+          await refreshPlans()
+          if (!stamp.isConnected) return
+          viewPlan(view)
+          const details = overlay.querySelector('.item-stamps')
+          if (details) details.open = true
+        })
+        .catch((e) => toast(e.message))
+    } else respondToEntry(stamp).catch((e) => toast(e.message))
     return
   }
   const trigger = event.target.closest('[data-action]')

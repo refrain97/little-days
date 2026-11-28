@@ -164,3 +164,32 @@ test('backup reminders apply to devices with private content and start after 14 
     delete globalThis.localStorage
   }
 })
+
+test('private breakfast restores survive ID collisions, repeat imports and trigger a backup reminder', () => {
+  const idea = {
+    id: 'idea-toast',
+    title: '蜂蜜吐司',
+    kind: 'quick',
+    visibility: 'private',
+    createdAt: stamp,
+  }
+  const data = { ...bundle([]), breakfast: { ideas: [idea] } }
+  assert.equal(validatePrivateBackup(data).breakfastIdeas, 1)
+  const shared = { ...idea, visibility: 'shared' }
+  assert.throws(() =>
+    validatePrivateBackup({ ...data, breakfast: { ideas: [shared] } }),
+  )
+  const saved = preparePrivateRestore(data, [], [], [], [shared])
+  const restored = saved.breakfast[0]
+  assert.match(restored.id, /^idea-private-/)
+  assert.equal(restored.visibility, 'private')
+  assert.deepEqual(
+    preparePrivateRestore(data, [], [], saved.receipts, [shared, restored]),
+    saved,
+  )
+  assert.equal(
+    privateBackupStatus([], [], Date.parse(stamp) + 15 * 86400000, [restored])
+      .due,
+    true,
+  )
+})

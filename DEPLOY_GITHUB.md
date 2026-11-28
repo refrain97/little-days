@@ -1,55 +1,39 @@
-# 安装、迁移与双人共享
+# 小日子 · 两台 iPhone 共用一本手账
 
-手机打开小日子，iPhone 在 Safari 分享菜单选「添加到主屏幕」，Android 使用浏览器的安装入口。首次联网打开后，可以离线记事，恢复联网后再同步。[打开小日子](https://refrain97.github.io/little-days/)
+网页从公开代码仓部署，共享内容保存在单独的私有仓库。当前项目的代码仓是 `refrain97/little-days`，现有个人数据仓是 `refrain97/little-days-data`。[打开小日子](https://refrain97.github.io/little-days/)
 
-| 当前配置 | 位置 |
+## 1. 准备两个仓库
+
+1. **代码仓选 Public。** Fork 本项目，或将前端源码、内置示例和工作流提交到自己的 `main`。只把应用文件放在代码仓，个人备份与照片留在设备或数据私库。
+2. **数据仓选 Private。** 新建一个私库，如 `little-days-data`，勾选 **Add a README file** 建立默认分支。本人在两台设备使用，可选自己的现有私库。
+3. **两个人各用自己的账号时**，建议在共同的 GitHub Free 组织中建数据私库，让双方成为组织成员，授予该库 **Write** 权限。GitHub 对细粒度令牌与外部协作者有使用限制。每个人用自己的令牌，方便独立撤销。[GitHub 细粒度令牌限制](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations)
+
+## 2. 开启 GitHub Pages
+
+在**公开代码仓**进入 **Settings → Pages → Build and deployment → Source → GitHub Actions**。推送 `main` 后，工作流先跑单元测试与手机验收，再发布 `dist/`。在 **Actions → Deploy Little Days to GitHub Pages → deploy** 可打开上线地址。仓库子路径和 `#home`、`#kitchen`、`#free` 都支持直接打开和刷新。[Pages 工作流](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
+
+## 3. 每人创建一个专用令牌
+
+1. 在 GitHub 进入 **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**。
+2. 填写便于辨认的名称与到期日。**Resource owner** 选择拥有**数据私库**的账号或组织。**Repository access → Only select repositories** 只勾这个私库。
+3. **Repository permissions → Contents** 选择 **Read and write**，保留自动勾选的 **Metadata / Read-only**，其余权限留空。组织若要求审批，须先批准令牌。生成后在对应手机输入，令牌不需要发给另一个人、提交到 GitHub 或填入 Actions Secrets。[GitHub 官方步骤](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
+
+## 4. 两台 iPhone 分别设置
+
+1. 在 Safari 打开 Pages 地址，点**分享 → 添加到主屏幕**。如果有“作为网页 App 打开”选项，将其打开。接下来从桌面图标进入应用，确保配置保存在日常使用的浏览器空间。[iPhone 使用手册](https://support.apple.com/guide/iphone/turn-a-website-into-an-app-iph42ab2f3a7/ios)
+2. 打开右上角设置或「我的小天地」，展开双人云空间，填写相同的 `组织或账号/私库名称`、本人的昵称、动物头像和本人的令牌，点「验证并连接」。本人在两台设备用同一账号，也可以给两台手机分别签发令牌。
+3. 在手机 A 写一条「一起看」的手记，放一张照片。手机 B 打开同一空间查看并盖个章，A 再同步即可看见回应。日常会自动同步，也可以在设置点「立即同步」。两部手机的 PAT 和可选 AI Key 仅保存在各自本机的 localStorage。
+4. 如果旧记录在本机预览、其他域名或独立的 Safari 存储中，先在旧位置导出完整备份，再在准备长期使用的主屏幕应用导入。完整导入会替换目标账本，请先备份。已绑定的浏览器资料会记住所属数据仓，迁往另一个仓时请使用新的浏览器资料并从备份迁移。
+
+## 日常使用与恢复
+
+| 情况 | 应用行为或操作 |
 | --- | --- |
-| 公开代码、Pages 发布 | [refrain97/little-days](https://github.com/refrain97/little-days) |
-| 本人多设备共享 | 私有仓库 `refrain97/little-days-data`，由 `refrain97` 账号授权 |
+| 共享手记、店铺、待办和早餐点子 | 分别存于 `shared/entries/`、`shared/places/`、`shared/freetime/`、`shared/breakfast/`，每条一个 JSON。照片和缩略图在 `shared/photos/` 和 `shared/thumbs/`，原声在 `shared/audio/`。 |
+| 断网、令牌到期 | 可以继续记录，文字、图片与待同步改动先落地 IndexedDB。联网后自动重试；遇到 401，按「更新 Token」换入同一私库的新令牌，等待中的改动会继续上传。 |
+| 改错或误删共享内容 | 在设置进入「回收站」，选对应版本点「恢复」。旧版本和已删除记录保留 30 天，过期项目在下次成功同步时清理。 |
+| 「仅自己」与备份 | 私密内容只保存在当前设备。用「导出私人备份」将自包含 JSON 存到“文件”，再点「文件已保存」。超过 14 天会轻提醒。「导入私人备份」合并私人记录及附件。 |
+| 已共享内容改为仅自己 | 下次成功同步会撤回当前分支中的该项。Git 历史、伙伴已另存的文件与旧备份可能保留之前公开给伙伴的版本。 |
+| 可选 AI | 在本机设置接口地址、模型和 Key。主动识别并同意后，所选共享素材会发送给指定 AI 接口。基础拍照、录音、打字、系统键盘听写和保存可独立使用。 |
 
-## 先迁移原有的本机手记
-
-如果此前在 localhost 或局域网版记过东西，请先完成这三步。原网址和 Pages 各自有一份浏览器存储。
-
-1. 在**原来的浏览器、原来的网址**打开「我的小天地 → 导出完整备份」，妥善保存 JSON。它可能含手记、照片、原声、私密事项与归档。
-2. 在准备长期使用的 Pages 网页或主屏幕 App 打开「我的小天地 → 导入备份」。看清数量后点「确认替换并恢复」。如果目标位置已经有记录，先另行备份。检查一条旧手记及其照片或原声，并确认清单和归档也在。
-3. 连接私库前检查「一起看」「仅自己」标记。只在自己的设备恢复个人完整备份；第二位使用者通过同步接收共享内容。PAT 和 AI 密钥要在新位置另行配置。
-
-## 本人先在两台设备上用
-
-1. 用 `refrain97` 登录 GitHub，在 **Settings → Developer settings → Personal access tokens → Fine-grained tokens** 创建令牌。**Resource owner** 选 `refrain97`，**Only select repositories** 只勾选 `little-days-data`。设定到期日，给 **Contents** 授予 **Read and write**，保留自动提供的 **Metadata** 只读权。每台设备可以用单独的令牌，便于单独撤销。[GitHub 令牌设置](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-2. 在每台设备的「我的小天地」中填写 `refrain97/little-days-data`、本人的昵称、头像首字和该设备的令牌，点击连接。应用自动识别默认分支。
-3. 在设备 A 保存一条「一起看」记录，点「立即同步」。设备 B 同步后应能看到同一条记录。「仅自己」留在创建它的设备上。
-
-## 第二位独立账号加入
-
-GitHub 的细粒度令牌目前限制 repository collaborator 和 outside collaborator 向仓库贡献内容。两人长期共同写入时，可以把**数据仓库**放在同一组织，邀请两人成为**组织正式成员**，授予该私库 **Write** 权限。公开代码仓和手机安装地址可继续使用现在的位置。[GitHub 细粒度令牌限制](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations)
-
-1. 在旧空间完成最后一次同步并导出本人备份，随后断开旧连接。选择将现有私库转移到共同组织，或在组织中新建私库。转移会保留 Git 历史；新建时勾选 **Add a README file**，用初始提交建立默认分支，另用本人备份迁移当前内容。[仓库转移](https://docs.github.com/en/repositories/creating-and-managing-repositories/transferring-a-repository) · [空仓库的 Git 引用限制](https://docs.github.com/en/rest/git/refs#create-a-reference)
-2. **已绑定过个人私库的设备**，用另一个浏览器、全新浏览器资料或新设备打开同一 Pages 地址。断开连接只移除凭据，原资料仍绑定旧的 `owner/repo@branch`。仓库转移后 owner 已改变，同一浏览器里的另一个标签页也会读到旧绑定。
-3. 在新资料中，本人如需保留私密内容，先导入自己的备份，再连接 `组织名/私库名`。新建私库时，由一台已恢复的设备先同步共享内容；转移来的私库已有共享文件。第二位使用者在自己的空白资料里直接连接组织私库。
-4. 两位成员分别以自己的 GitHub 身份创建令牌，**Resource owner** 选该组织，只授权该私库的 **Contents** 读写权。各填本人的昵称及令牌；若组织要求审批，等管理员批准后再同步。使用一条临时共享记录验证双方可读写，确认后妥善保留旧备份。
-
-## 共享范围、回收站与 AI
-
-- 数据仓库的 `shared/entries/`、`shared/places/`、`shared/freetime/` 分别保存共享手记、店铺、清单，附件存于 `shared/photos/` 和 `shared/audio/`。有私库读取权限的成员可以直接查看这些文件。
-- 已共享内容改为「仅自己」后，下次成功同步会撤回分支当前版本中的共享内容。回收站 `shared/trash/` 中的修改快照和删除项目保留 30 天，到期后在下一次同步清理。应用关闭期间不会执行清理。Git 旧提交、克隆和对方已有的备份仍可能含旧副本。误传密钥时应先撤销或轮换。[GitHub 敏感数据清除指南](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
-- 可选的 AI 接口、模型和个人 API Key 在「我的小天地」配置。只有「一起看」记录可主动调用云 AI，确认本次内容和接收方后才发送。PAT 和 API Key 仅保存在配置它们的设备，排除在共享数据、完整备份和静态发布文件之外。
-
-## 离线、授权过期和私人备份
-
-- 首屏先读设备上的 IndexedDB。手记、照片、原声、待同步状态和离线页面资源都存放在 IndexedDB。联网后先查私库及分支 HEAD，分支有新提交时再比较 Git Trees 的文件 SHA，只取新增或变化的文件。私库附件由带授权的 GitHub REST 请求获取，保存到本机并通过 Blob URL 显示。
-- 看到「GitHub 授权已失效」时，点「更新 Token」，为同一数据私库生成新的 Fine-grained PAT。保存后会自动补传等待中的共享改动。旧令牌可以在 GitHub 上撤销。
-- 需要单独保存私人内容时，打开「我的小天地 → 私人手记备份」。在 Safari 将 JSON 保存到“文件”后，点「文件已保存」记录本次日期。超过 14 天会给出轻量提醒。导入私人备份会把私人手记、附件及清单合并到当前设备。换网址或整本迁移可使用另一个「整本备份与迁移」入口。
-
-## 在其他 GitHub 账号从零部署
-
-1. 在 GitHub 的 **New repository** 新建 **Public** 代码仓库，默认分支用 `main`。把本项目源码、内置示例素材及 `.github/workflows/deploy.yml` 提交并推送到该仓库。项目自带的 `.gitignore` 将个人备份、测试截图和本地凭据排除在分发文件之外。
-2. 再建一个 **Private** 数据仓库，勾选 **Add a README file**，其余文件由应用首次连接时建立。两位独立账号使用时，按上文「第二位独立账号加入」在共同组织下建库并设置成员权限。
-3. 在公开代码仓启用下述 Pages 工作流。手机首次连接时填入自己的私库名，应用会验证仓库可见性与写入权限。
-
-## 更新网页版本
-
-在代码仓的 **Settings → Pages → Source** 选择 **GitHub Actions**。推送到 `main`，或在 **Actions → Deploy Little Days to GitHub Pages → Run workflow** 选 `main`。工作流会把 `dist/` 部署到 Pages，并将公开代码仓名称写入页面。提交前检查待提交文件，手记备份、个人附件和密钥应留在公开代码仓之外。[GitHub Pages 自定义工作流](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
-
-本机可用 `npm run build` 和 `npm run preview -- --base /little-days/ --port 5188` 检查仓库子路径。静态缓存按站点路径与版本区分，只缓存公开应用文件。相同 `OWNER.github.io` 下的多个页面共享浏览器来源，请在本人信任同一来源下所有应用时连接私库，或使用独立域名。
+同一 `OWNER.github.io` 下的项目共享网页来源和浏览器存储，连接令牌的设备应信任该来源下部署的应用。

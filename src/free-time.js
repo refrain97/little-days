@@ -104,7 +104,7 @@ function taskRow(row, now, archived = false) {
   } else if (row.date) meta.push(dayLabel(row.date, now))
   return `<li class="ft-task${archived ? ' ft-archived' : ''}">
     <button type="button" class="ft-state" ${action(archived ? 'restore-plan' : 'finish-plan', row.key)} aria-label="${escape((archived ? '还原' : '完成') + '「' + row.title + '」')}" title="${archived ? '还原' : '完成'}">${icon(archived ? 'refresh' : 'check', 15)}</button>
-    <button type="button" class="ft-task-body" ${action(archived ? 'edit-plan' : 'view-plan', archived ? row.planId : row.key)}><strong>${escape(row.title)} ${authorBadge(row)}</strong><small>${escape(meta.filter(Boolean).join(' · '))}</small></button>
+    <button type="button" class="ft-task-body" ${action('view-plan', row.key)}><strong>${escape(row.title)} ${authorBadge(row)}</strong><small>${escape(meta.filter(Boolean).join(' · '))}</small></button>
     ${archived && row.stage === 'task' ? `<button type="button" class="ft-write" ${action('journal-plan', row.key)} aria-label="${escape(row.title)}，${row.hasJournal ? '查看手记' : '记下这次'}">${icon(row.hasJournal ? 'book' : 'pen', 13)}${row.hasJournal ? '查看手记' : '记下这次'}</button>` : ''}
   </li>`
 }
@@ -127,7 +127,7 @@ function dateRow(row, now, originalDate) {
         : days > 1
           ? `还有 ${days} 天`
           : ''
-  return `<li><button type="button" class="ft-date-row" ${action('edit-plan', row.planId)}>
+  return `<li><button type="button" class="ft-date-row" ${action('view-plan', row.key)}>
     <span class="ft-event-icon">${icon(marks[row.kind] || 'calendar', 19)}</span>
     <span><strong>${escape(row.planTitle)} ${authorBadge(row)}</strong><small>${escape(meta.filter(Boolean).join(' · '))}</small></span>
     <span class="ft-countdown">${escape(countdown)}</span>${icon('next', 13)}</button></li>`

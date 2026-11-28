@@ -1,4 +1,5 @@
-import { createEntry, publicAuthor } from './journal.js'
+import { cleanReactions } from './stickers.js'
+import { createEntry, authorship } from './journal.js'
 import { normalPlan } from './plans.js'
 import {
   sharedLocalState,
@@ -13,7 +14,7 @@ import {
 } from './storage.js'
 import { isLocalMedia, blobDataUrl, dataMediaType } from './media-store.js'
 import { assetPath } from './paths.js'
-import { compressJournalPhoto } from './device-ai.js'
+import { compressJournalPhoto, makeJournalThumbnail } from './device-ai.js'
 import { validateBackup } from './backup.js'
 
 const recordFields = [
@@ -36,6 +37,8 @@ const recordFields = [
   'source',
   'photoDescription',
   'originalTextUnverified',
+  'isBreakfast',
+  'breakfastKind',
 ]
 const planFields = [
   'id',
@@ -75,11 +78,12 @@ const pick = (obj, fields) =>
     fields.filter((f) => obj[f] !== undefined).map((f) => [f, obj[f]]),
   )
 
-// Animal identities and stamps belong to the local notebook in this release.
-function authorship(row) {
-  const author = publicAuthor(row?.author),
-    updatedBy = publicAuthor(row?.updatedBy)
-  return { ...(author ? { author } : {}), ...(updatedBy ? { updatedBy } : {}) }
+const breakfastFields = ['id', 'title', 'kind', 'createdAt', 'visibility']
+function social(row) {
+  const reactions = cleanReactions(row?.reactions).sort((a, b) =>
+    a.actor.id < b.actor.id ? -1 : 1,
+  )
+  return { ...authorship(row), ...(reactions.length ? { reactions } : {}) }
 }
 function cleanStep(row) {
   return { ...pick(row, stepFields), ...authorship(row), visibility: 'shared' }
@@ -88,7 +92,7 @@ function metadata(kind, row) {
   if (kind === 'entries')
     return {
       ...pick(createEntry(row), recordFields),
-      ...authorship(row),
+      ...social(row),
       visibility: 'shared',
       isSample: false,
     }
@@ -98,10 +102,16 @@ function metadata(kind, row) {
       ...authorship(row),
       visibility: 'shared',
     }
+  if (kind === 'breakfast')
+    return {
+      ...pick(row, breakfastFields),
+      ...social(row),
+      visibility: 'shared',
+    }
   const p = normalPlan(row)
   return {
     ...pick(p, planFields),
-    ...authorship(row),
+    ...social(row),
     visibility: 'shared',
     completions: p.completions.map(cleanStep),
     reopened: p.reopened.map(cleanStep),
@@ -110,8 +120,10 @@ function metadata(kind, row) {
 function entity(kind, row) {
   const result = { kind, id: row.id, data: metadata(kind, row) }
   if (kind === 'entries') {
-    if (isLocalMedia(row.image) || builtInPhoto(row.image))
+    if (isLocalMedia(row.image) || builtInPhoto(row.image)) {
       result.photoKey = row.image
+      result.thumbKey = row.image
+    }
     if (isLocalMedia(row.audio)) result.audioKey = row.audio
   }
   return result
@@ -157,15 +169,20 @@ export function createCloudAdapter() {
       )
     const entities = [],
       privateKeys = []
-    for (const kind of ['entries', 'places', 'freetime']) {
+    for (const row of state.breakfast)
+      if (row.visibility === 'private') restricted.breakfast.add(row.id)
+    for (const kind of ['entries', 'places', 'freetime', 'breakfast']) {
       for (const row of state[kind]) {
-        if (row.isSample || sample(row.id)) continue
+        if (
+          row.isSample ||
+          (kind !== 'breakfast' && sample(row.id) && row.isSample !== false)
+        )
+          continue
         if (!restricted[kind].has(row.id)) entities.push(entity(kind, row))
       }
     }
-    for (const kind of ['entries', 'freetime'])
-      for (const id of restricted[kind])
-        if (!sample(id)) privateKeys.push({ kind, id })
+    for (const kind of ['entries', 'freetime', 'breakfast'])
+      for (const id of restricted[kind]) privateKeys.push({ kind, id })
     const visiblePlaces = new Set(state.places.map((p) => p.id))
     for (const id of state.withdrawn)
       if (!visiblePlaces.has(id)) privateKeys.push({ kind: 'places', id })
@@ -181,19 +198,21 @@ export function createCloudAdapter() {
     )
       throw new Error('共享内容在读取时已改变，请重新同步。')
   }
-  async function attachment(expected, kind) {
+  async function attachment(expected, kind, thumbnail = false) {
     if (expected.kind !== 'entries') return null
     const key = kind === 'image' ? expected.photoKey : expected.audioKey
     if (!key) return null
     await requireCurrent(expected)
-    let value = await readSharedAttachment(expected.id, kind, key)
+    let value = await readSharedAttachment(expected.id, kind, key, thumbnail)
     if (typeof value === 'string' && builtInPhoto(value)) {
       const response = await fetch(assetPath(value))
       if (!response.ok) throw new Error('无法读取内置照片。')
       value = await response.blob()
+      if (thumbnail) value = await makeJournalThumbnail(value)
     }
-    const data =
-      kind === 'image'
+    const data = thumbnail
+      ? await blobDataUrl(value)
+      : kind === 'image'
         ? await compressJournalPhoto(value)
         : value instanceof Blob
           ? await blobDataUrl(value)
@@ -208,29 +227,27 @@ export function createCloudAdapter() {
     data,
     photoPath,
     audioPath,
+    thumbPath,
+    readThumb,
     readPhoto,
     readAudio,
     expected,
+    keepThumb = false,
     keepPhoto = false,
     keepAudio = false,
   }) {
     if (
-      !['entries', 'places', 'freetime'].includes(kind) ||
+      !['entries', 'places', 'freetime', 'breakfast'].includes(kind) ||
       typeof id !== 'string' ||
-      !id ||
-      sample(id)
+      !id
     )
       return false
     const accepts = (current, records, plans, withdrawn, withdrawals) => {
       if (kind === 'places' && !current && withdrawn.includes(id)) return false
       const restricted = localPrivacy(records, plans, withdrawals)
-      if (
-        current?.isSample ||
-        current?.visibility === 'private' ||
-        restricted[kind].has(id)
-      )
+      if (current?.visibility === 'private' || restricted[kind].has(id))
         return false
-      if (value && kind !== 'places') {
+      if (value && (kind === 'entries' || kind === 'freetime')) {
         const nextRecords =
           kind === 'entries'
             ? [...records.filter((r) => r.id !== id), value]
@@ -242,9 +259,14 @@ export function createCloudAdapter() {
         if (localPrivacy(nextRecords, nextPlans, withdrawals)[kind].has(id))
           return false
       }
-      return same(current ? entity(kind, current) : null, expected || null)
+      // A saved personal edit can keep the original sample ID. An untouched demo has no cloud base.
+      return same(
+        current && !current.isSample ? entity(kind, current) : null,
+        expected || null,
+      )
     }
-    let value = null
+    let value = null,
+      thumbnail
     if (data != null) {
       if (
         data.visibility !== 'shared' ||
@@ -256,6 +278,9 @@ export function createCloudAdapter() {
       if (kind === 'entries') {
         keepPhoto = Boolean(keepPhoto && photoPath && expected?.photoKey)
         keepAudio = Boolean(keepAudio && audioPath && expected?.audioKey)
+        thumbnail = thumbPath && !keepThumb ? await readThumb() : ''
+        if (thumbPath && !keepThumb && !dataMediaType(thumbnail, 'image'))
+          throw new Error('共享缩略图还未完整读取。')
         const image = photoPath && !keepPhoto ? await readPhoto() : '',
           audio = audioPath && !keepAudio ? await readAudio() : ''
         if (
@@ -265,7 +290,7 @@ export function createCloudAdapter() {
           throw new Error('云端附件尚未完整读取。')
         value = {
           ...pick(wire, recordFields),
-          ...authorship(wire),
+          ...social(wire),
           isSample: false,
           image,
           audio,
@@ -275,10 +300,12 @@ export function createCloudAdapter() {
           throw new Error('云端清单格式无效。')
         value = {
           ...pick(wire, planFields),
-          ...authorship(wire),
+          ...social(wire),
           completions: wire.completions.map(cleanStep),
           reopened: wire.reopened.map(cleanStep),
         }
+      } else if (kind === 'breakfast') {
+        value = { ...pick(wire, breakfastFields), ...social(wire) }
       } else
         value = normalizePlace({
           ...pick(wire, placeFields),
@@ -290,23 +317,28 @@ export function createCloudAdapter() {
         exportedAt: new Date().toISOString(),
         preferences: {},
         generation: '',
+        ...(kind === 'breakfast' ? { breakfast: { ideas: [value] } } : {}),
         records: kind === 'entries' ? [value] : [],
         places: kind === 'places' ? [value] : [],
         plans: kind === 'freetime' ? [value] : [],
       })
     }
-    return applyCloudObject(kind, id, value, accepts, {
+    const applied = await applyCloudObject(kind, id, value, accepts, {
       cloudPhotoPath: photoPath,
+      cloudThumbPath: thumbPath,
+      thumbnail,
       cloudAudioPath: audioPath,
       keepPhoto,
       keepAudio,
     })
+    return applied && { entity: applied.stored && entity(kind, applied.stored) }
   }
   return {
     snapshot,
     apply,
     ackOutbox,
     readCachedAttachment,
+    readThumb: (item) => attachment(item, 'image', true),
     readPhoto: (item) => attachment(item, 'image'),
     readAudio: (item) => attachment(item, 'audio'),
   }

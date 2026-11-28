@@ -5,9 +5,13 @@ import {
 } from './breakfast-model.js'
 import {
   addBreakfast,
+  updateBreakfast,
+  removeBreakfast,
   chooseBreakfast,
   readBreakfast,
 } from './breakfast-store.js'
+import { itemStamps } from './item-stamps.js'
+import { toggleStamp } from './storage.js'
 import { authorBadge } from './cloud-profile.js'
 import { photoAttributes } from './gallery.js'
 import { icon } from './icons.js'
@@ -150,6 +154,7 @@ export function createBreakfastView({
     history.add(drawn)
     const chosen = choiceToday()?.id === drawn
     const words = item.id.startsWith('entry:') ? item.quote : item.text
+    const savedIdea = data.ideas.some((idea) => idea.id === item.id)
     open(
       `<div class="bf-slip">
       <button class="close-sheet" data-action="close" aria-label="收起早餐签">${icon('x', 18)}</button>
@@ -159,27 +164,33 @@ export function createBreakfastView({
       ${item.image ? `<div class="bf-slip-photo"><img ${photoAttributes(item.image)} alt="${escape(item.title)}"></div>` : ''}
       ${words ? `<p class="bf-quote">${escape(words)}</p>` : ''}
       ${authorBadge(item)}
+      ${savedIdea ? itemStamps(item, 'breakfast') : ''}
       <div class="bf-actions">${chosen ? stamp() : `<button class="bf-accept" ${action('accept', drawn)}>${icon('check', 17)}就吃这个！</button>`}
-      <button ${action('next')} ${shown().length < 2 ? 'disabled' : ''}>${icon('refresh', 16)}换一张</button></div>
+      <button ${action('next')} ${shown().length < 2 ? 'disabled' : ''}>${icon('refresh', 16)}换一张</button>${savedIdea ? `<button ${action('edit', item.id)}>${icon('pen', 15)}编辑</button>` : ''}</div>
     </div>`,
       '早餐抽签',
     )
   }
-  function add() {
+  function editIdea(original) {
+    const editing = Boolean(original)
+    const heading = editing ? '编辑早餐点子' : '塞个早餐点子'
     open(
       `<div class="bf-form-wrap"><button class="close-sheet" data-action="close" aria-label="关闭早餐点子">${icon('x', 18)}</button>
-      <h2>塞个早餐点子</h2>
-      <form data-breakfast-form><label class="bf-name">早餐名字<input name="title" maxlength="80" required autocomplete="off" placeholder="比如，热豆浆配饭团"></label>
+      <h2>${heading}</h2>
+      <form data-breakfast-form><label class="bf-name">早餐名字<input name="title" value="${escape(original?.title || '')}" maxlength="80" required autocomplete="off" placeholder="比如，热豆浆配饭团"></label>
       <fieldset class="bf-form-kinds"><legend>做法</legend>${Object.keys(
         breakfastKinds,
       )
         .map(
           (k) =>
-            `<label class="bf-chip bf-${k}"><input type="radio" name="kind" value="${k}" ${k === (filter || 'quick') ? 'checked' : ''}><span>${kindLabel(k)}</span></label>`,
+            `<label class="bf-chip bf-${k}"><input type="radio" name="kind" value="${k}" ${k === (original?.kind || filter || 'quick') ? 'checked' : ''}><span>${kindLabel(k)}</span></label>`,
         )
         .join('')}</fieldset>
-      <p hidden role="alert" class="bf-error"></p><button type="submit" class="bf-accept">${icon('plus', 17)}放进早餐池</button></form></div>`,
-      '塞个早餐点子',
+      <div class="bf-form-footer"><label>可见范围<select name="visibility"><option value="shared">一起看</option><option value="private" ${original?.visibility === 'private' ? 'selected' : ''}>仅自己</option></select></label>
+      <button type="submit" class="bf-accept">${icon(editing ? 'check' : 'plus', 17)}${editing ? '保存修改' : '放进早餐池'}</button></div>
+      ${editing ? `<button type="button" class="bf-remove" ${action('remove', original.id)}>移除这个点子</button>` : ''}
+      <p hidden role="alert" class="bf-error"></p></form></div>`,
+      heading,
     )
     const form = overlay.querySelector('[data-breakfast-form]')
     form.onsubmit = async (event) => {
@@ -188,10 +199,16 @@ export function createBreakfastView({
       if (submit.disabled) return
       submit.disabled = true
       try {
-        const idea = await addBreakfast(
-          form.elements.title.value,
-          form.elements.kind.value,
-        )
+        const { title, kind, visibility } = form.elements
+        const idea = editing
+          ? await updateBreakfast(
+              original.id,
+              title.value,
+              kind.value,
+              visibility.value,
+              original,
+            )
+          : await addBreakfast(title.value, kind.value, visibility.value)
         await reload()
         if (form.isConnected) {
           if (filter && filter !== idea.kind) filter = idea.kind
@@ -220,8 +237,29 @@ export function createBreakfastView({
         history.clear()
         render()
         break
+      case 'breakfast-edit': {
+        const idea = data.ideas.find((row) => row.id === value)
+        if (idea) editIdea(idea)
+        break
+      }
+      case 'breakfast-remove': {
+        const idea = data.ideas.find((row) => row.id === value)
+        if (!idea) return
+        open(
+          `<div class="bf-form-wrap"><h2>移除早餐点子？</h2><p>${escape(idea.title)}</p><div class="bf-actions"><button ${action('edit', value)}>留着</button><button class="bf-accept" ${action('confirm-remove', value)}>确认移除</button></div></div>`,
+          '移除早餐点子',
+        )
+        break
+      }
+      case 'breakfast-confirm-remove':
+        await removeBreakfast(value)
+        await reload()
+        close()
+        render()
+        toast('已移除早餐点子')
+        break
       case 'breakfast-add':
-        add()
+        editIdea(null)
         break
       case 'breakfast-draw':
       case 'breakfast-next':
@@ -260,6 +298,18 @@ export function createBreakfastView({
     pool,
     reload,
     handle,
+    ideas: () => data.ideas,
+    async respond(id, stamp) {
+      await toggleStamp(id, stamp, 'breakfast')
+      await reload()
+      render()
+      const idea = data.ideas.find((row) => row.id === id)
+      if (idea && drawn === id && overlay.querySelector('.bf-slip')) {
+        showSlip(idea)
+        const details = overlay.querySelector('.item-stamps')
+        if (details) details.open = true
+      }
+    },
     resetPeriod: () => {
       selectedPeriod = ''
     },

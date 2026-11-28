@@ -1,8 +1,20 @@
 import { getAISettings, saveAISettings, clearAISettings } from './device-ai.js'
-import { readProfile, saveProfile, profileFrom } from './cloud-profile.js'
+import {
+  readProfile,
+  saveProfile,
+  profileFrom,
+  chooseAnimal,
+  stickerActor,
+} from './cloud-profile.js'
+import { animals, animalIcon } from './stickers.js'
 
 const by = (root, selector) => root.querySelector(selector)
-const kinds = { entries: '手记', places: '店铺', freetime: '清单' }
+const kinds = {
+  entries: '手记',
+  places: '店铺',
+  freetime: '清单',
+  breakfast: '早餐点子',
+}
 const field = (label, attributes) =>
   `<label class="cloud-field"><span>${label}</span><input ${attributes}></label>`
 const secret =
@@ -15,14 +27,20 @@ const repoField = field(
 )
 
 export function cloudControls() {
-  return `<section class="cloud-tools" aria-labelledby="space-heading"><h3 id="space-heading">双人云空间</h3>
+  return `<section class="cloud-tools" aria-labelledby="space-heading"><h3 id="space-heading">双人 GitHub 云空间</h3>
     <p data-space-state aria-live="polite"></p>
-    <div data-connected hidden class="cloud-actions"><button type="button" data-sync>立即同步</button><button type="button" data-trash>回收站</button><button type="button" data-disconnect>断开连接</button></div>
-    <div data-trash-list class="trash-list" hidden></div>
+    <div class="cloud-actions"><button type="button" data-sync hidden>立即同步</button><button type="button" data-trash aria-expanded="false" aria-controls="cloud-trash-list">回收站</button><button type="button" data-disconnect hidden>断开连接</button></div>
+    <div id="cloud-trash-list" data-trash-list class="trash-list" hidden></div>
     <details data-space-setup><summary data-space-summary>连接双人云空间</summary>
       <form data-space-form>
         ${repoField}
-        <div class="cloud-profile-fields">${field('我的昵称', plain + ' data-space-name placeholder="你的昵称" maxlength="48" required')}${field('头像首字', plain + ' data-space-initial placeholder="取昵称首字" maxlength="12"')}</div>
+        <div class="cloud-profile-fields">${field('我的昵称', plain + ' data-space-name placeholder="你的昵称" maxlength="48" required')}
+          <label class="cloud-field"><span>我的动物头像</span><span class="cloud-animal"><span data-space-animal-preview aria-hidden="true"></span><select data-space-animal>${Object.entries(
+            animals,
+          )
+            .map(([key, name]) => `<option value="${key}">${name}</option>`)
+            .join('')}</select></span></label>
+        </div>
         ${field('GitHub Fine-grained PAT', secret + ' data-space-token placeholder="仅保存在这台设备" required')}
         <p><a data-token-link href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">去 GitHub 创建专用 Token ↗</a>，选「Only select repositories」并只勾选上面的私库，允许 Contents 读写。</p>
         <p>连接后，已有和新建的「一起看」内容都会同步到这个仓库。</p>
@@ -68,7 +86,8 @@ export function paintSpaceStatus(root, status) {
     : status.boundSpace
       ? '已断开 · 本机账本关联 ' + status.boundSpace
       : '尚未连接，手记保存在本机。'
-  by(root, '[data-connected]').hidden = !status.connected
+  by(root, '[data-sync]').hidden = !status.connected
+  by(root, '[data-disconnect]').hidden = !status.connected
   by(root, '[data-sync]').disabled = status.phase === 'syncing'
   const token = by(root, '[data-space-token]')
   token.required = !status.connected || status.needsToken === true
@@ -85,7 +104,7 @@ export function paintSpaceStatus(root, status) {
     ? '更新我的资料或 Token'
     : '连接双人云空间'
 }
-export function bindCloudControls(root, sync) {
+export function bindCloudControls(root, sync, onProfileChange) {
   root = by(root, '.settings-inner') || root
   const $ = (s) => by(root, s)
   const form = $('[data-space-form]')
@@ -95,7 +114,16 @@ export function bindCloudControls(root, sync) {
   const status = sync.status()
   const profile = readProfile()
   $('[data-space-name]').value = profile?.nickname || ''
-  $('[data-space-initial]').value = profile?.initial || ''
+  const animalField = $('[data-space-animal]')
+  const previewAnimal = () => {
+    $('[data-space-animal-preview]').innerHTML = animalIcon(
+      animalField.value,
+      24,
+    )
+  }
+  animalField.value = stickerActor().animal
+  previewAnimal()
+  animalField.addEventListener('change', previewAnimal)
   const codeRepo = document.querySelector(
     'meta[name="little-days-code-repo"]',
   )?.content
@@ -128,10 +156,17 @@ export function bindCloudControls(root, sync) {
         value,
       )
       if (!match) throw Error('仓库名称请写成 owner/repo。')
+      const nickname = $('[data-space-name]').value.trim()
       const candidate = profileFrom(
-        $('[data-space-name]').value,
-        $('[data-space-initial]').value,
+        nickname,
+        nickname === profile?.nickname ? profile.initial : '',
       )
+      const animal = animalField.value
+      const saveIdentity = () => {
+        saveProfile(candidate)
+        chooseAnimal(animal)
+        onProfileChange?.()
+      }
       const token = $('[data-space-token]').value.trim()
       if (!token) {
         const current = sync.status()
@@ -142,14 +177,15 @@ export function bindCloudControls(root, sync) {
             (current.owner + '/' + current.repo).toLowerCase()
         )
           throw Error('请填写此私库的 Fine-grained PAT。')
-        saveProfile(candidate)
+        saveIdentity()
         $('[data-space-setup]').open = false
         tell('本机记录者资料已更新。')
         return
       }
       tell('正在验证私有仓库及权限…')
-      await sync.connect({ owner: match[1], repo: match[2], token }, () =>
-        saveProfile(candidate),
+      await sync.connect(
+        { owner: match[1], repo: match[2], token },
+        saveIdentity,
       )
       $('[data-space-token]').value = ''
       $('[data-space-setup]').open = false
@@ -180,6 +216,7 @@ export function bindCloudControls(root, sync) {
       $('[data-space-token]').value = ''
       $('[data-trash-list]').replaceChildren()
       $('[data-trash-list]').hidden = true
+      $('[data-trash]').setAttribute('aria-expanded', 'false')
       tell('此设备已断开，GitHub Token 已移除。本机手记仍可使用。')
     } catch (e) {
       tell(e.message)
@@ -189,6 +226,11 @@ export function bindCloudControls(root, sync) {
   async function trash() {
     const container = $('[data-trash-list]')
     container.hidden = false
+    if (!sync.status().connected) {
+      container.textContent =
+        '连接私有云空间后，可以在这里恢复近 30 天的共享内容。'
+      return
+    }
     container.textContent = '正在读取回收站…'
     try {
       const items = await sync.listTrash()
@@ -239,6 +281,7 @@ export function bindCloudControls(root, sync) {
   }
   $('[data-trash]').onclick = () => {
     const list = $('[data-trash-list]')
+    $('[data-trash]').setAttribute('aria-expanded', String(list.hidden))
     if (list.hidden) void trash()
     else list.hidden = true
   }

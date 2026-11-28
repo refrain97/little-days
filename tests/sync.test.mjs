@@ -1,162 +1,14 @@
 import assert from 'node:assert/strict'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
+import { Repository, fineToken } from './github-fixture.mjs'
 import { createGitHubSync } from '../src/github-sync.js'
 
-const fineToken = () => 'github_pat_' + randomBytes(24).toString('hex')
 const entryId = 'entry-1'
 const entryKey = 'entries/' + entryId
 const entryPath = 'shared/' + entryKey + '.json'
 const day = 86_400_000
-const sha = (bytes) => createHash('sha1').update(bytes).digest('hex')
-const response = (status, body) => ({
-  status,
-  ok: status >= 200 && status < 300,
-  json: async () => structuredClone(body),
-})
-
-// Model immutable Git objects and a branch that can only fast-forward. Only the
-// injected fetch function is called; no fixture or credential leaves the process.
-class Repository {
-  profile = {
-    owner: 'example',
-    repo: 'journal',
-    token: fineToken(),
-  }
-  blobs = new Map()
-  trees = new Map()
-  commits = new Map()
-  head = ''
-  private = true
-  online = true
-  beforePush = null
-  beforeRequest = null
-  requests = []
-
-  get files() {
-    return this.head
-      ? this.trees.get(this.commits.get(this.head).tree.sha)
-      : new Map()
-  }
-
-  putBlob(content) {
-    const bytes = Buffer.from(content, 'base64')
-    const id = sha(
-      Buffer.concat([Buffer.from('blob ' + bytes.length + '\0'), bytes]),
-    )
-    this.blobs.set(id, content)
-    return id
-  }
-  putTree(files) {
-    const id = sha(JSON.stringify([...files].sort()))
-    this.trees.set(id, files)
-    return id
-  }
-  putCommit(tree, parents) {
-    const id = sha(JSON.stringify([tree, parents, this.commits.size]))
-    this.commits.set(id, { tree: { sha: tree }, parents })
-    return id
-  }
-  read(path) {
-    return JSON.parse(
-      Buffer.from(this.blobs.get(this.files.get(path)), 'base64').toString(
-        'utf8',
-      ),
-    )
-  }
-  replaceFile(path, data) {
-    const files = new Map(this.files)
-    files.set(
-      path,
-      this.putBlob(Buffer.from(JSON.stringify(data)).toString('base64')),
-    )
-    this.head = this.putCommit(
-      this.putTree(files),
-      this.head ? [this.head] : [],
-    )
-  }
-  fetch = async (url, { method, headers, body, redirect }) => {
-    const root = 'https://api.github.com/repos/example/journal'
-    assert.ok(url === root || url.startsWith(root + '/'))
-    assert.equal(redirect, 'error')
-    assert.ok(
-      !url.includes(this.profile.token) && !body?.includes(this.profile.token),
-    )
-    const route = url.slice(root.length).split('?')[0]
-    this.requests.push([method, route])
-    this.beforeRequest?.(method, route)
-    if (!this.online) throw new TypeError('simulated offline')
-    if (headers.Authorization !== 'Bearer ' + this.profile.token)
-      return response(401, { message: 'Bad credentials' })
-    const data = body && JSON.parse(body)
-    if (route === '')
-      return response(200, {
-        private: this.private,
-        default_branch: 'main',
-        size: this.head ? 1 : 0,
-        permissions: { push: true },
-      })
-    if (route === '/git/ref/heads/main')
-      return this.head
-        ? response(200, { object: { sha: this.head } })
-        : response(409, { message: 'Git Repository is empty.' })
-    if (method === 'PUT' && route.startsWith('/contents/')) {
-      this.replaceFile(
-        route.slice('/contents/'.length),
-        JSON.parse(Buffer.from(data.content, 'base64').toString()),
-      )
-      return response(201, {})
-    }
-    const [, , resource, id] = route.split('/')
-    if (method === 'GET' && resource === 'commits')
-      return response(200, this.commits.get(id))
-    if (method === 'GET' && resource === 'trees') {
-      const tree = [...this.trees.get(id)].map(([path, sha]) => ({
-        path,
-        sha,
-        mode: '100644',
-        type: 'blob',
-      }))
-      return response(200, { tree, truncated: false })
-    }
-    if (method === 'GET' && resource === 'blobs') {
-      assert.ok(this.blobs.has(id))
-      return response(200, {
-        encoding: 'base64',
-        content: this.blobs.get(id),
-        sha: id,
-      })
-    }
-    if (method === 'POST' && resource === 'blobs')
-      return response(201, { sha: this.putBlob(data.content) })
-    if (method === 'POST' && resource === 'trees') {
-      const files = new Map(this.trees.get(data.base_tree))
-      for (const update of data.tree) {
-        if (update.sha === null) files.delete(update.path)
-        else files.set(update.path, update.sha)
-      }
-      return response(201, { sha: this.putTree(files) })
-    }
-    if (method === 'POST' && resource === 'commits')
-      return response(201, { sha: this.putCommit(data.tree, data.parents) })
-    if (method === 'PATCH' && route === '/git/refs/heads/main') {
-      assert.equal(data.force, false)
-      if (this.beforePush) {
-        const change = this.beforePush
-        this.beforePush = null
-        change()
-        return response(409, { message: 'Conflict' })
-      }
-      if (this.commits.get(data.sha).parents[0] !== this.head)
-        return response(422, { message: 'Update is not a fast forward' })
-      this.head = data.sha
-      return response(200, {})
-    }
-    throw new Error('Unexpected mock request: ' + method + ' ' + route)
-  }
-}
-
 class Device {
   entities = new Map()
   privateKeys = []
@@ -194,11 +46,13 @@ class Device {
         readCachedAttachment: async (path) => {
           for (const item of this.entities.values()) {
             if (item.photoKey === path) return this.photo
+            if (item.thumbKey === path) return this.thumb
             if (item.audioKey === path) return this.audio
           }
           return null
         },
         readPhoto: async () => this.photo,
+        readThumb: async () => this.thumb,
         readAudio: async () => this.audio,
         apply: async ({
           kind,
@@ -206,10 +60,13 @@ class Device {
           data,
           expected,
           photoPath,
+          thumbPath,
           audioPath,
           keepPhoto,
+          keepThumb,
           keepAudio,
           readPhoto,
+          readThumb,
           readAudio,
         }) => {
           const key = kind + '/' + id
@@ -222,19 +79,25 @@ class Device {
             return false
           if (!data) {
             this.entities.delete(key)
-            return true
+            return { entity: null }
           }
           const entity = { kind, id, data }
           if (photoPath) {
             if (!keepPhoto) this.photo = await readPhoto()
             entity.photoKey = keepPhoto ? expected.photoKey : photoPath
           }
+          if (thumbPath) {
+            if (!keepThumb) this.thumb = await readThumb()
+            entity.thumbKey = keepThumb ? expected.thumbKey : thumbPath
+          }
           if (audioPath) {
             if (!keepAudio) this.audio = await readAudio()
             entity.audioKey = keepAudio ? expected.audioKey : audioPath
           }
           this.entities.set(key, entity)
-          return true
+          const acknowledged = structuredClone(entity)
+          this.afterApply?.(entity)
+          return { entity: acknowledged }
         },
       },
     })
@@ -265,10 +128,14 @@ async function pair({ attachments = false } = {}) {
     first.photo =
       'data:image/jpeg;base64,' +
       Buffer.from([255, 216, 255, 217]).toString('base64')
+    first.thumb =
+      'data:image/jpeg;base64,' +
+      Buffer.from([255, 216, 255, 224, 255, 217]).toString('base64')
     first.audio =
       'data:audio/mp4;base64,' + Buffer.alloc(1_100_000, 7).toString('base64')
     Object.assign(entity, {
       photoKey: 'device-only-photo',
+      thumbKey: 'device-only-thumb',
       audioKey: 'device-only-audio',
     })
   }
@@ -317,6 +184,29 @@ test('devices merge independent edits, including a competing commit that returns
   )
 })
 
+test('a photo replaced after applying a download remains queued at acknowledgement', async () => {
+  const { repo, first, second } = await pair({ attachments: true })
+  const initial = repo.read(entryPath)
+  first.edit({ notes: '更新说明' })
+  await first.sync.sync()
+  second.afterApply = (item) => {
+    second.afterApply = null
+    item.photoKey = 'new-photo-after-local-commit'
+    item.thumbKey = 'new-thumbnail-after-local-commit'
+    second.photo = 'data:image/jpeg;base64,/9j/8f/Z'
+    second.thumb = 'data:image/jpeg;base64,/9j/4f/Z'
+  }
+  await second.sync.sync()
+  assert.equal(second.sync.status().pending, 1)
+  await second.sync.sync()
+  const changed = repo.read(entryPath)
+  assert.notEqual(changed.photoPath, initial.photoPath)
+  assert.notEqual(changed.thumbPath, initial.thumbPath)
+  await first.sync.sync()
+  assert.equal(first.photo, second.photo)
+  assert.equal(first.thumb, second.thumb)
+})
+
 test('same-field edits keep the previous version; deleted entries can be restored until expiry', async () => {
   const { repo, first, second, advance } = await pair()
   first.edit({ notes: '第一份' })
@@ -356,6 +246,7 @@ test('withdrawing a shared entry removes its history and media; stale edits and 
   const { repo, first, second } = await pair({ attachments: true })
   assert.equal(first.audio, second.audio)
   assert.equal(first.photo, second.photo)
+  assert.equal(first.thumb, second.thumb)
   first.edit({ title: '另一版' })
   await first.sync.sync()
   assert.ok((await first.sync.listTrash()).length > 0)
@@ -366,7 +257,10 @@ test('withdrawing a shared entry removes its history and media; stale edits and 
   assert.deepEqual(await first.sync.listTrash(), [])
   assert.ok(
     ![...repo.files.keys()].some(
-      (p) => p.startsWith('shared/photos/') || p.startsWith('shared/audio/'),
+      (p) =>
+        p.startsWith('shared/photos/') ||
+        p.startsWith('shared/thumbs/') ||
+        p.startsWith('shared/audio/'),
     ),
   )
 
@@ -380,6 +274,7 @@ test('withdrawing a shared entry removes its history and media; stale edits and 
       repo.profile.token,
       stale,
       'device-only-photo',
+      'device-only-thumb',
       'device-only-audio',
     ])
       assert.ok(!bytes.includes(forbidden))
@@ -523,4 +418,112 @@ test('unsupported or legacy credentials never reach GitHub and a bound notebook 
   await device.sync.connect(repo.profile)
   assert.equal(device.sync.status().needsToken, false)
   assert.ok(repo.requests.length)
+})
+
+const sticker = (id, stamp, minute) => ({
+  actor: { id, animal: id === 'a' ? 'cat' : 'fox', name: id },
+  stamp,
+  at: new Date(Date.UTC(2030, 0, 1, 0, minute)).toISOString(),
+})
+
+test('two devices merge their own stamps independently across a 409 and preserve a later withdrawal', async () => {
+  const { repo, first, second } = await pair()
+  first.edit({
+    isBreakfast: true,
+    breakfastKind: 'slow',
+    stickerAuthor: sticker('a', 'chef', 0).actor,
+    reactions: [sticker('a', 'chef', 2)],
+  })
+  repo.beforePush = () => {
+    const doc = repo.read(entryPath)
+    doc.data.reactions = [sticker('b', 'taste', 3)]
+    repo.replaceFile(entryPath, doc)
+  }
+  await first.sync.sync()
+  await second.sync.sync()
+  const current = second.entities.get(entryKey).data
+  assert.equal(current.isBreakfast, true)
+  assert.equal(current.stickerAuthor.animal, 'cat')
+  assert.deepEqual(current.reactions, [
+    sticker('a', 'chef', 2),
+    sticker('b', 'taste', 3),
+  ])
+  first.edit({ reactions: [sticker('a', null, 8), sticker('b', 'taste', 3)] })
+  second.edit({
+    reactions: [sticker('a', 'aroma', 4), sticker('b', 'chef', 7)],
+  })
+  await first.sync.sync()
+  await second.sync.sync()
+  assert.deepEqual(repo.read(entryPath).data.reactions, [
+    sticker('a', null, 8),
+    sticker('b', 'chef', 7),
+  ])
+})
+
+test('shared breakfast changes and restores cross devices; private withdrawal removes current and trash copies', async () => {
+  const { repo, first, second } = await pair()
+  const id = 'idea-custom',
+    key = 'breakfast/' + id,
+    path = 'shared/' + key + '.json'
+  first.entities.set(key, {
+    kind: 'breakfast',
+    id,
+    data: {
+      id,
+      visibility: 'shared',
+      title: '测试早餐',
+      kind: 'quick',
+      stickerAuthor: sticker('a', 'chef', 1).actor,
+    },
+  })
+  await first.sync.sync()
+  await second.sync.sync()
+  assert.equal(second.entities.get(key).data.title, '测试早餐')
+  second.entities.get(key).data.title = '周末早餐'
+  first.entities.get(key).data.reactions = [sticker('a', 'taste', 1)]
+  await second.sync.sync()
+  await first.sync.sync()
+  assert.equal(repo.read(path).data.reactions[0].stamp, 'taste')
+  first.entities.delete(key)
+  await first.sync.sync()
+  const deleted = (await second.sync.listTrash()).find(
+    (row) => row.reason === 'deleted' && row.kind === 'breakfast',
+  )
+  await second.sync.restoreTrash(deleted.id)
+  assert.equal(second.entities.get(key).data.title, '周末早餐')
+  await first.sync.sync()
+  first.privateKeys.push({ kind: 'breakfast', id })
+  first.entities.delete(key)
+  await first.sync.sync()
+  assert.ok(!repo.files.has(path))
+  assert.ok(!(await first.sync.listTrash()).some((row) => row.entityId === id))
+  second.entities.get(key).data.title = '过期早餐'
+  await second.sync.sync()
+  assert.ok(!second.entities.has(key))
+  assert.ok(!repo.files.has(path))
+})
+
+test('an existing shared photo gains an authenticated thumbnail, retained and restored with its detail', async () => {
+  const { repo, first, second } = await pair({ attachments: true })
+  const initial = repo.read(entryPath)
+  assert.match(initial.thumbPath, /^shared\/thumbs\/[0-9a-f]{40}\.jpg$/)
+  assert.notEqual(initial.photoPath, initial.thumbPath)
+  const old = { ...initial }
+  delete old.thumbPath
+  repo.replaceFile(entryPath, old)
+  await second.sync.sync()
+  // Older data without a stored thumbnail is still readable. It is backfilled when a device can provide one.
+  const entry = second.entities.get(entryKey)
+  assert.ok(entry.photoKey)
+  entry.thumbKey = 'rebuilt-thumb'
+  await second.sync.sync()
+  assert.equal(repo.read(entryPath).thumbPath, initial.thumbPath)
+  second.entities.delete(entryKey)
+  await second.sync.sync()
+  const trash = (await second.sync.listTrash()).find(
+    (row) => row.reason === 'deleted',
+  )
+  assert.ok(repo.files.has(initial.thumbPath))
+  await second.sync.restoreTrash(trash.id)
+  assert.equal(second.thumb, first.thumb)
 })

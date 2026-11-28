@@ -8,9 +8,10 @@ const renewTokenText =
 const fineTokenText =
   '请使用以 github_pat_ 开头、仅授权该私库的 Fine-grained PAT。更新后会自动同步本机更改。'
 const signature = { format: 'little-days-shared', version: 1 }
-const groups = ['entries', 'places', 'freetime']
+const groups = ['entries', 'places', 'freetime', 'breakfast']
 const groupSet = new Set(groups)
 const windows = {
+  thumb: /^shared\/thumbs\/[0-9a-f]{40}\.jpg$/,
   photo: /^shared\/photos\/[0-9a-f]{40}\.jpg$/,
   audio: /^shared\/audio\/[0-9a-f]{40}\.bin$/,
 }
@@ -25,7 +26,7 @@ const keyFor = (kind, id) => kind + '/' + encodeURIComponent(id)
 const keyOf = (item) => keyFor(item.kind, item.id)
 const jsonPath = (key) => 'shared/' + key + '.json'
 const forbidden =
-  /^(?:__proto__|constructor|prototype|image|audio|photoKey|audioKey|cloudPhotoPath|cloudAudioPath|githubToken|accessToken|token|apiKey|secret|password|credential|authorization|aiConfig|localAiConfig)$/i
+  /^(?:__proto__|constructor|prototype|image|audio|photoKey|thumbKey|audioKey|cloudPhotoPath|cloudThumbPath|cloudAudioPath|githubToken|accessToken|token|apiKey|secret|password|credential|authorization|aiConfig|localAiConfig)$/i
 const bucketKey = (c) => (c.owner + '/' + c.repo).toLowerCase() + '@' + c.branch
 const safely = (s) => String(s ?? '').trim()
 function cleanTree(value) {
@@ -67,15 +68,72 @@ function validateEntity(kind, id, data) {
     (data.id !== undefined && data.id !== id)
   )
     throw new Error('共享记录格式无效，已停止同步。')
+  if (
+    data.reactions !== undefined &&
+    (!Array.isArray(data.reactions) ||
+      !data.reactions.every(
+        (row) =>
+          object(row) &&
+          object(row.actor) &&
+          typeof row.actor.id === 'string' &&
+          (row.stamp === null || typeof row.stamp === 'string') &&
+          typeof row.at === 'string' &&
+          Number.isFinite(Date.parse(row.at)),
+      ))
+  )
+    throw new Error('共享盖章回应格式无效。')
   return cleanTree(data)
 }
 function localDigest(e) {
-  return e ? canonical([e.data, e.photoKey || '', e.audioKey || '']) : ''
+  return e
+    ? canonical([
+        e.data,
+        e.photoKey || '',
+        e.audioKey || '',
+        ...(e.thumbKey ? [e.thumbKey] : []),
+      ])
+    : ''
 }
 function emptyWire(data) {
   return { data, photoPath: '', audioPath: '', audioType: '' }
 }
-function mergeFields(base, local, remote, conflict) {
+// A stamp is a single per-actor choice, including a null stamp that records removal.
+// Independent actors commute. Concurrent writes for the same actor choose one whole stamp.
+function mergeReactions(base, local, remote) {
+  const indexed = (rows) =>
+    new Map((rows || []).map((row) => [row.actor.id, row]))
+  const b = indexed(base),
+    l = indexed(local),
+    r = indexed(remote)
+  const result = []
+  for (const id of [...new Set([...l.keys(), ...r.keys()])].sort()) {
+    const left = l.get(id),
+      right = r.get(id),
+      previous = b.get(id)
+    let row
+    if (equal(left, previous)) row = right
+    else if (equal(right, previous)) row = left
+    else if (!left || !right) row = left || right
+    else
+      row =
+        Date.parse(left.at) === Date.parse(right.at)
+          ? canonical(left) >= canonical(right)
+            ? left
+            : right
+          : Date.parse(left.at) > Date.parse(right.at)
+            ? left
+            : right
+    if (row) result.push(row)
+  }
+  return result
+}
+function mergeFields(base, local, remote, conflict, field) {
+  if (
+    field === 'reactions' &&
+    [base, local, remote].every((v) => v === undefined || Array.isArray(v))
+  ) {
+    return mergeReactions(base, local, remote)
+  }
   if (equal(local, remote) || equal(remote, base)) return local
   if (equal(local, base)) return remote
   if (object(local) && object(remote) && (base === undefined || object(base))) {
@@ -85,7 +143,7 @@ function mergeFields(base, local, remote, conflict) {
       ...Object.keys(remote),
       ...Object.keys(base || {}),
     ])) {
-      const value = mergeFields(base?.[k], local[k], remote[k], conflict)
+      const value = mergeFields(base?.[k], local[k], remote[k], conflict, k)
       if (value !== undefined) result[k] = value
     }
     return result
@@ -223,7 +281,7 @@ function client(config, fetcher) {
 }
 const fileOK = /^(?:README(?:\.md|\.txt)?|LICENSE(?:\.md|\.txt)?|\.gitignore)$/i
 const trashPath = /^shared\/trash\/(\d{13})-([\w-]+)\.json$/
-const fileKey = /^shared\/(entries|places|freetime)\/([^/]+)\.json$/
+const fileKey = /^shared\/(entries|places|freetime|breakfast)\/([^/]+)\.json$/
 function keyFromPath(path) {
   const m = path.match(fileKey)
   if (!m) return ''
@@ -236,7 +294,7 @@ function validLayout(items) {
   for (const item of items) {
     if (item.type === 'tree') {
       if (
-        !/^shared(?:\/(?:entries|places|freetime|photos|audio|trash))?$/.test(
+        !/^shared(?:\/(?:entries|places|freetime|breakfast|photos|thumbs|audio|trash))?$/.test(
           item.path,
         )
       )
@@ -249,6 +307,7 @@ function validLayout(items) {
       !fileOK.test(item.path) &&
       !fileKey.test(item.path) &&
       !windows.photo.test(item.path) &&
+      !windows.thumb.test(item.path) &&
       !windows.audio.test(item.path) &&
       !trashPath.test(item.path)
     )
@@ -403,6 +462,7 @@ function trashSummary(path, sha, doc) {
     expiresAt: new Date(date + retain).toISOString(),
     photoPath: doc.record?.photoPath || '',
     audioPath: doc.record?.audioPath || '',
+    thumbPath: doc.record?.thumbPath || '',
   }
 }
 function fileDocument(kind, id, wire) {
@@ -413,13 +473,16 @@ function wireFrom(doc, kind, id) {
     throw new Error('共享文件的编号或版本无效。')
   const data = validateEntity(kind, id, doc.data)
   if (
+    (kind !== 'entries' && (doc.photoPath || doc.thumbPath || doc.audioPath)) ||
     (doc.photoPath && !windows.photo.test(doc.photoPath)) ||
+    (doc.thumbPath && (!doc.photoPath || !windows.thumb.test(doc.thumbPath))) ||
     (doc.audioPath &&
       (!windows.audio.test(doc.audioPath) || !audioTypes.test(doc.audioType)))
   )
     throw new Error('共享附件的路径或格式无效。')
   return {
     data,
+    ...(doc.thumbPath ? { thumbPath: doc.thumbPath } : {}),
     photoPath: doc.photoPath || '',
     audioPath: doc.audioPath || '',
     audioType: doc.audioPath ? doc.audioType : '',
@@ -431,13 +494,18 @@ function mediaBytes(uri, kind) {
   const match = /^data:(.+);base64$/i.exec(header)
   if (
     !match ||
-    (kind === 'photo'
+    (kind !== 'audio'
       ? !/^image\/jpeg$/i.test(match[1])
       : !audioTypes.test(match[1]))
   )
     throw new Error('共享附件格式未受支持。')
   const bytes = uri.slice(header.length + 1)
-  const max = kind === 'photo' ? 256 * 1024 : 6 * 1024 * 1024
+  const max =
+    kind === 'thumb'
+      ? 40 * 1024
+      : kind === 'photo'
+        ? 256 * 1024
+        : 6 * 1024 * 1024
   if (
     !bytes ||
     bytes.length > Math.ceil(max / 3) * 4 ||
@@ -473,6 +541,11 @@ function freshState() {
     restores: [],
   }
 }
+function needsPreview(entity, base) {
+  return Boolean(
+    entity?.thumbKey && base?.wire.photoPath && !base.wire.thumbPath,
+  )
+}
 function calculatePending(snap, base, publishedKeys = []) {
   const pending = []
   // A previously deleted shared item can still have versions in the 30-day trash.
@@ -489,6 +562,7 @@ function calculatePending(snap, base, publishedKeys = []) {
       previous = base[key]
     if (
       !withdrawn.has(key) &&
+      !needsPreview(local, previous) &&
       localDigest(local) === (previous?.localDigest || '')
     )
       continue
@@ -586,6 +660,7 @@ async function processCommit({
     if (wire)
       for (const [kind, path] of [
         ['photo', wire.photoPath],
+        ['thumb', wire.thumbPath],
         ['audio', wire.audioPath],
       ])
         if (
@@ -594,7 +669,7 @@ async function processCommit({
             files.get(path) !== path.match(/[a-f0-9]{40}/)[0])
         )
           throw new Error(
-            kind === 'photo'
+            kind !== 'audio'
               ? '共享照片文件缺失或版本不符。'
               : '共享录音文件缺失或版本不符。',
           )
@@ -605,7 +680,7 @@ async function processCommit({
   async function materialize(entity, base) {
     if (!entity) return null
     const wire = emptyWire(entity.data)
-    for (const kind of ['photo', 'audio']) {
+    for (const kind of ['photo', 'thumb', 'audio']) {
       const localKey = entity[kind + 'Key']
       if (!localKey) continue
       const ref =
@@ -622,7 +697,11 @@ async function processCommit({
       const cacheKey = keyOf(entity) + '/' + kind + '/' + localKey
       let attachment = attachCache.get(cacheKey)
       if (!attachment) {
-        const method = kind === 'photo' ? adapter.readPhoto : adapter.readAudio
+        const method = {
+          photo: adapter.readPhoto,
+          thumb: adapter.readThumb,
+          audio: adapter.readAudio,
+        }[kind]
         if (!method) throw new Error('设备暂时无法提供共享附件。')
         const { bytes, type } = mediaBytes(
           await method.call(adapter, entity),
@@ -630,9 +709,13 @@ async function processCommit({
         )
         const sha = await putBlob(api, bytes)
         const path =
-          kind === 'photo'
-            ? 'shared/photos/' + sha + '.jpg'
-            : 'shared/audio/' + sha + '.bin'
+          kind === 'audio'
+            ? 'shared/audio/' + sha + '.bin'
+            : 'shared/' +
+              (kind === 'photo' ? 'photos' : 'thumbs') +
+              '/' +
+              sha +
+              '.jpg'
         attachment = { sha, path, type }
         attachCache.set(cacheKey, attachment)
       }
@@ -693,7 +776,9 @@ async function processCommit({
       base = state.base[key]
     if (privateHere && !published.has(key) && key !== restoreKey) continue
     const current = await getWire(key)
-    const localChanged = localDigest(local) !== (base?.localDigest || '')
+    const localChanged =
+      localDigest(local) !== (base?.localDigest || '') ||
+      needsPreview(local, base)
     // A peer removed this entity without any recoverable deletion. Do not upload locally
     // edited bytes or re-create a recoverable copy of material withdrawn from sharing.
     const revoked =
@@ -739,6 +824,13 @@ async function processCommit({
           current,
           conflict,
         )
+        // Thumbnails must follow their full photo when both people replaced the image.
+        if (localWire.photoPath !== current.photoPath) {
+          const chosen =
+            target.photoPath === localWire.photoPath ? localWire : current
+          if (chosen.thumbPath) target.thumbPath = chosen.thumbPath
+          else delete target.thumbPath
+        }
         if (conflict.value && !equal(localWire, target))
           archive(key, localWire, 'conflict')
       }
@@ -797,6 +889,7 @@ async function processCommit({
     const used = new Set()
     const mark = (wire) => {
       if (wire?.photoPath) used.add(wire.photoPath)
+      if (wire?.thumbPath) used.add(wire.thumbPath)
       if (wire?.audioPath) used.add(wire.audioPath)
     }
     for (const key of remoteKeys) if (!next.has(key)) mark(await getWire(key))
@@ -805,7 +898,12 @@ async function processCommit({
       if (changes.get(path) !== null) mark(await trashInfo(path))
     for (const { doc } of archives) mark(doc.record)
     for (const p of files.keys())
-      if ((windows.photo.test(p) || windows.audio.test(p)) && !used.has(p))
+      if (
+        (windows.photo.test(p) ||
+          windows.thumb.test(p) ||
+          windows.audio.test(p)) &&
+        !used.has(p)
+      )
         changes.set(p, null)
   }
   const committed = await atomicWrite(
@@ -840,23 +938,31 @@ async function processCommit({
   const updated = { ...state.base }
   for (const [key, row] of next) {
     const { target, local, apply } = row
+    let acknowledged = local
     if (apply) {
       const result = await adapter.apply({
         kind: kindForKey(key),
         id: idForKey(key),
         data: target?.data || null,
         photoPath: target?.photoPath || '',
+        thumbPath: target?.thumbPath || '',
         audioPath: target?.audioPath || '',
         audioType: target?.audioType || '',
         keepPhoto:
           !!local?.photoKey &&
           !!target?.photoPath &&
           target.photoPath === row.localWire?.photoPath,
+        keepThumb:
+          !!local?.thumbKey &&
+          !!target?.thumbPath &&
+          target.photoPath === row.localWire?.photoPath &&
+          target.thumbPath === row.localWire?.thumbPath,
         keepAudio:
           !!local?.audioKey &&
           !!target?.audioPath &&
           target.audioPath === row.localWire?.audioPath,
         readPhoto: download(target?.photoPath, 'image/jpeg'),
+        readThumb: download(target?.thumbPath, 'image/jpeg'),
         readAudio: download(
           target?.audioPath,
           target?.audioType || 'application/octet-stream',
@@ -864,9 +970,11 @@ async function processCommit({
         expected: local,
       })
       if (result === false) {
-        row.skipped = true
         continue
       }
+      // Only acknowledge the version actually written in the IDB transaction.
+      // Its media may already have been replaced when the final snapshot is read.
+      acknowledged = result.entity
     }
     if (!target) {
       delete updated[key]
@@ -875,21 +983,13 @@ async function processCommit({
     updated[key] = {
       wire: target,
       sha: changes.get(jsonPath(key)) || files.get(jsonPath(key)),
-      photoKey: local?.photoKey || '',
-      audioKey: local?.audioKey || '',
-      localDigest: localDigest(local),
+      photoKey: acknowledged?.photoKey || '',
+      audioKey: acknowledged?.audioKey || '',
+      thumbKey: acknowledged?.thumbKey || '',
+      localDigest: localDigest(acknowledged),
     }
   }
   const finalSnap = parseSnapshot(await adapter.snapshot())
-  for (const [key, row] of next) {
-    if (!row.apply || row.skipped || !row.target) continue
-    const item = finalSnap.entities.get(key)
-    if (!item) continue
-    const base = updated[key]
-    base.photoKey = item.photoKey || ''
-    base.audioKey = item.audioKey || ''
-    base.localDigest = localDigest({ ...item, data: row.target.data })
-  }
   for (const [path, meta] of trashCache)
     if (committed.files.get(path) !== meta.sha) trashCache.delete(path)
   for (const { path, doc } of archives)

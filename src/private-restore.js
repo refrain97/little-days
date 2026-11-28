@@ -3,17 +3,28 @@ import { normalPlan } from './plans.js'
 
 // Restoration uses local receipts so importing again updates the same private copy.
 // Fresh IDs for absent/shared rows avoid reusing a previously published Git identity.
-export function preparePrivateRestore(data, records, plans, receipts) {
+export function preparePrivateRestore(
+  data,
+  records,
+  plans,
+  receipts,
+  ideas = [],
+) {
   const existing = {
     entries: new Map(records.map((row) => [row.id, row])),
     freetime: new Map(plans.map((row) => [row.id, row])),
+    breakfast: new Map(ideas.map((row) => [row.id, row])),
   }
   const previous = new Map(
     receipts.map((row) => [row.kind + ':' + row.from, row.to]),
   )
-  const result = { records: [], plans: [], receipts: [] }
-  const ids = { entries: new Map(), freetime: new Map() }
-  const reserved = { entries: new Set(), freetime: new Set() }
+  const result = { records: [], plans: [], breakfast: [], receipts: [] }
+  const ids = { entries: new Map(), freetime: new Map(), breakfast: new Map() }
+  const reserved = {
+    entries: new Set(),
+    freetime: new Set(),
+    breakfast: new Set(),
+  }
   const fresh = () =>
     'private-' +
     (globalThis.crypto?.randomUUID?.() ||
@@ -31,7 +42,7 @@ export function preparePrivateRestore(data, records, plans, receipts) {
       reserved[kind].has(id)
     ) {
       do {
-        id = fresh()
+        id = (kind === 'breakfast' ? 'idea-' : '') + fresh()
       } while (rows.has(id) || reserved[kind].has(id))
     }
     reserve(kind, original, id)
@@ -104,6 +115,10 @@ export function preparePrivateRestore(data, records, plans, receipts) {
         reopened: plan.reopened.map(moveStep),
       }),
     )
+  }
+  for (const idea of data.breakfast?.ideas || []) {
+    const id = choose('breakfast', idea.id)
+    result.breakfast.push({ ...idea, id, visibility: 'private' })
   }
   for (const [kind, mapping] of Object.entries(ids))
     for (const [from, to] of mapping) result.receipts.push({ kind, from, to })

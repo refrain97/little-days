@@ -40,6 +40,7 @@ export function openCapture({
   venues = [],
   defaultDiningSource = '',
   defaultVenueName = '',
+  defaultVisibility = 'shared',
   privateOnly = false,
 } = {}) {
   if (activeDialog && activeDialog.isConnected) return activeDialog
@@ -148,7 +149,9 @@ export function openCapture({
   let opinionChosen = false
   let startedWithAttitude = false
   let visibility =
-    privateOnly || record?.visibility === 'private' ? 'private' : 'shared'
+    privateOnly || (record?.visibility ?? defaultVisibility) === 'private'
+      ? 'private'
+      : 'shared'
   const previews = new Map()
   let photo = record?.image || ''
   let photoThumbnail = null

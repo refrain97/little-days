@@ -1,7 +1,7 @@
 import { demoPhotoNames } from '../src/paths.js'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -40,57 +40,145 @@ function publishedRepository() {
   return value
 }
 
+const digest = (data) => createHash('sha256').update(data).digest('hex')
+const fingerprint = (path, hash) =>
+  path.slice(0, -posix.extname(path).length) +
+  '.' +
+  hash.slice(0, 16) +
+  posix.extname(path)
+const imports = /\b(?:from\s*|import\s*(?:\(\s*)?)['"](\.[^'"]+\.js)['"]/g
+const sourceLinks = /(?:src|href)="\.\/(src\/[\w./-]+\.(?:css|js))"/g
+const dependency = (name, ref) =>
+  posix.normalize(posix.join(posix.dirname(name), ref))
+function relativePath(from, to) {
+  const path = posix.relative(posix.dirname(from), to)
+  return path.startsWith('.') ? path : './' + path
+}
+
 export async function collectSite() {
-  const html = (await readAsset(resolve(root, 'index.html')))
+  let html = (await readAsset(resolve(root, 'index.html')))
     .toString()
     .replace(
       /(<meta name="little-days-code-repo" content=")[^"]*(")/,
       (_, before, after) => before + publishedRepository() + after,
     )
-  const files = new Map([['index.html', Buffer.from(html)]])
-  const scripts = [
-    ...html.matchAll(/(?:src|href)="\.\/(src\/[\w./-]+\.(?:css|js))"/g),
-  ].map((m) => m[1])
-  // Follow the site's entry modules. Unreferenced scripts, snapshots, exports,
-  // API helpers for old local servers and environment files never enter dist.
-  for (let i = 0; i < scripts.length; i++) {
-    const name = scripts[i]
-    if (files.has(name)) continue
+  const files = new Map()
+  const urls = new Map()
+  const cached = new Map()
+  function immutable(name, bytes, hash = digest(bytes)) {
+    const target = fingerprint(name, hash)
+    urls.set(name, target)
+    files.set(target, bytes)
+    cached.set(target, digest(bytes))
+    return target
+  }
+  for (const name of publicAssets) {
+    const bytes = await readAsset(resolve(publicDir, name))
+    files.set(name, bytes) // Installed icons, earlier notebooks, and external bookmarks.
+    if (name === 'manifest.json') continue
+    if (name === 'fonts/OFL.txt') {
+      cached.set(name, digest(bytes))
+      continue
+    }
+    immutable(name, bytes)
+  }
+  const manifest = JSON.parse(files.get('manifest.json').toString())
+  for (const icon of manifest.icons) {
+    const target = urls.get(icon.src.replace(/^\.\//, ''))
+    if (!target) throw new Error('PWA 图标缺失。')
+    icon.src = './' + target
+  }
+  const manifestBytes = Buffer.from(JSON.stringify(manifest))
+  for (const name of ['manifest.json', 'manifest.webmanifest']) {
+    files.set(name, manifestBytes)
+    cached.set(name, digest(manifestBytes))
+  }
+
+  const mediaMap = Object.fromEntries(
+    [...urls]
+      .filter(([name]) => /^(icons|images)\//.test(name))
+      .map(([name, url]) => ['/' + name, url]),
+  )
+  // Follow only modules reachable from the page, including dynamic imports.
+  const queue = [...html.matchAll(sourceLinks)].map((match) => match[1])
+  const modules = new Map()
+  for (let i = 0; i < queue.length; i++) {
+    const name = queue[i]
+    if (modules.has(name) || urls.has(name)) continue
     if (!/^src\/(?:[\w-]+\/)*[\w.-]+\.(?:js|css)$/.test(name))
       throw new Error('无效的发布路径：' + name)
-    const data = await readAsset(resolve(root, name))
-    files.set(name, data)
-    if (name.endsWith('.js')) {
-      const imports = data
-        .toString()
-        .matchAll(/\b(?:from\s*|import\s*(?:\(\s*)?)['"](\.[^'"]+\.js)['"]/g)
-      for (const [, ref] of imports)
-        scripts.push(
-          new URL(ref, 'https://build.invalid/' + name).pathname.slice(1),
-        )
+    let source = (await readAsset(resolve(root, name))).toString()
+    if (name.endsWith('.css')) {
+      // Only rewrite relative assets on the public allowlist (e.g. local WOFF2 slices).
+      source = source.replace(
+        /url\((['"]?)(\.[^)'"]+)\1\)/g,
+        (match, quote, ref) => {
+          const target = urls.get(dependency(name, ref))
+          return target ? "url('" + relativePath(name, target) + "')" : match
+        },
+      )
+      const bytes = Buffer.from(source)
+      files.set(name, bytes)
+      immutable(name, bytes)
+      continue
     }
+    if (name === 'src/paths.js')
+      source = source.replace(
+        '/*__BUNDLED_PATHS__*/ {}',
+        JSON.stringify(mediaMap),
+      )
+    const deps = [...source.matchAll(imports)].map((match) =>
+      dependency(name, match[1]),
+    )
+    modules.set(name, { source, deps, hash: digest(source) })
+    queue.push(...deps)
   }
-  for (const name of publicAssets)
-    files.set(name, await readAsset(resolve(publicDir, name)))
-  const manifest = JSON.parse(files.get('manifest.json').toString())
-  if (manifest.icons.some(({ src }) => !files.has(src.replace(/^\.\//, ''))))
-    throw new Error('PWA 图标缺失。')
-  // Keep the previous manifest filename valid for installed copies.
-  files.set('manifest.webmanifest', files.get('manifest.json'))
-  const names = [...files.keys()].sort()
+  // Hash each module's reachable source graph. Cycles get stable names without a
+  // self-referential hash, and an unrelated module can keep its previous URL.
+  const moduleHashes = new Map()
+  for (const name of modules.keys()) {
+    const graph = new Set([name])
+    for (const member of graph)
+      for (const ref of modules.get(member).deps) graph.add(ref)
+    const identity = [...graph]
+      .sort()
+      .map((ref) => [ref, modules.get(ref).hash])
+    const hash = digest('little-days-esm-v1' + JSON.stringify(identity))
+    moduleHashes.set(name, hash)
+    urls.set(name, fingerprint(name, hash))
+  }
+  for (const [name, { source }] of modules) {
+    const result = source.replace(imports, (match, ref) =>
+      match.replace(ref, relativePath(name, urls.get(dependency(name, ref)))),
+    )
+    const target = immutable(name, Buffer.from(result), moduleHashes.get(name))
+    // A stable import delegates to the same module instance as the application.
+    files.set(
+      name,
+      Buffer.from("export * from './" + posix.basename(target) + "'\n"),
+    )
+  }
+  html = html.replace(/(src|href)="\.\/([^"]+)"/g, (match, attr, path) =>
+    urls.has(path) ? attr + '="./' + urls.get(path) + '"' : match,
+  )
+  const documentVersion = digest(html).slice(0, 20)
+  html = html.replace(
+    '</head>',
+    '<meta name="little-days-shell" content="' +
+      documentVersion +
+      '" />\n  </head>',
+  )
+  const indexBytes = Buffer.from(html)
+  files.set('index.html', indexBytes)
+  cached.set('index.html', digest(indexBytes))
   const template = (await readAsset(resolve(publicDir, 'sw.js'))).toString()
-  const manifestFiles = names.map((name) => [
-    name,
-    createHash('sha256').update(files.get(name)).digest('hex'),
-  ])
-  const release = JSON.stringify(manifestFiles)
-  const revision = createHash('sha256')
-    .update(template)
-    .update(release)
-    .digest('hex')
-    .slice(0, 20)
+  const release = JSON.stringify(
+    [...cached].sort(([a], [b]) => a.localeCompare(b, 'en')),
+  )
+  const revision = digest(template + release).slice(0, 20)
   const worker = template
     .replace('__SITE_REVISION__', revision)
+    .replace('__DOCUMENT_VERSION__', documentVersion)
     .replace('/*__SITE_FILES__*/ []', release)
   files.set('sw.js', Buffer.from(worker))
   return files

@@ -3,7 +3,10 @@ import { appPath } from './paths.js'
 export function registerOfflineShell() {
   const workers = navigator.serviceWorker
   if (!workers) return
-  let previouslyControlled = Boolean(workers.controller)
+  let lastController = workers.controller
+  const documentVersion = document.querySelector(
+    'meta[name="little-days-shell"]',
+  )?.content
   let reloadPending = false
   let observer
   const fontPrefix = new URL(appPath('fonts/'), location.href).href
@@ -36,9 +39,29 @@ export function registerOfflineShell() {
       { entryTypes: ['resource'] },
     )
   }
-  workers.addEventListener('controllerchange', () => {
+  function announceDocument() {
+    if (documentVersion)
+      workers.controller?.postMessage({
+        type: 'current-document',
+        version: documentVersion,
+      })
     rememberFonts(performance.getEntriesByType('resource'))
-    if (previouslyControlled) {
+  }
+
+  function checkController() {
+    const controller = workers.controller
+    if (!controller) return
+    // Chromium can fire controllerchange before the activation transaction completes.
+    if (controller.state === 'activating') {
+      controller.addEventListener('statechange', checkController, {
+        once: true,
+      })
+      return
+    }
+    const updated = lastController && lastController !== controller
+    lastController = controller
+    announceDocument()
+    if (updated) {
       reloadPending = true
       if (!observer) {
         observer = new MutationObserver(applyUpdate)
@@ -51,8 +74,8 @@ export function registerOfflineShell() {
       }
       applyUpdate()
     }
-    previouslyControlled = true
-  })
+  }
+  workers.addEventListener('controllerchange', checkController)
   document.addEventListener('focusout', () => {
     if (reloadPending) setTimeout(applyUpdate, 0)
   })
@@ -61,17 +84,33 @@ export function registerOfflineShell() {
     const registration = await workers.register(appPath('sw.js'), {
       updateViaCache: 'none',
     })
-    let lastCheck = Date.now()
-    function checkOnReturn() {
+    let lastCheck = 0
+    function checkForUpdate() {
       if (document.visibilityState !== 'visible') return
       applyUpdate()
-      if (navigator.onLine && Date.now() - lastCheck >= 60000) {
+      if (
+        navigator.onLine !== false &&
+        !registration.installing &&
+        Date.now() - lastCheck >= 60000
+      ) {
         lastCheck = Date.now()
         registration.update().catch(() => {})
       }
     }
-    document.addEventListener('visibilitychange', checkOnReturn)
-    window.addEventListener('pageshow', checkOnReturn)
+    function resume() {
+      if (document.visibilityState !== 'visible') return
+      checkController()
+      checkForUpdate()
+    }
+    resume()
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('pageshow', resume)
+    window.addEventListener('online', () => {
+      lastCheck = 0
+      resume()
+    })
+    // Tabs and installed apps can stay in the foreground across several deployments.
+    window.setInterval(checkForUpdate, 60000)
   }
   if (document.readyState === 'complete') register().catch(() => {})
   else

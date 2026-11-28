@@ -10,6 +10,9 @@ export const stamps = {
   taste: '我也想吃！',
   aroma: '看起来好香',
   chef: '厨神附体',
+  drink: '我也想喝！',
+  cool: '看起来好冰爽',
+  healed: '好治愈',
   visit: '下次带我去',
 }
 const faces = {
@@ -87,15 +90,59 @@ export function legacyAnimal(name) {
   return Object.keys(animals)[hash % Object.keys(animals).length]
 }
 
+export function stampChoices(category) {
+  if (category === '美食') return ['taste', 'chef']
+  if (category === '饮品') return ['drink', 'cool']
+  return ['visit', 'healed']
+}
+
+const stampIcons = {
+  taste: 'heart',
+  chef: 'chef',
+  drink: 'cup',
+  cool: 'sparkle',
+  healed: 'heart',
+  visit: 'sprout',
+}
+const visibleStamps = (item) =>
+  cleanReactions(item.reactions).filter((row) => row.stamp)
+const shownAnimal = (row, current) =>
+  row.actor.id === current.id ? current.animal : row.actor.animal
+const shownName = (row, current) =>
+  row.actor.id === current.id ? current.name : row.actor.name
+
+export function stampOptions(entry, actor, icon, extraAttributes = '') {
+  const active = visibleStamps(entry)
+  const mine = active.find((row) => row.actor.id === actor.id)
+  const options = stampChoices(entry.category).map(
+    (key) =>
+      `<button type="button" data-act-stamp="${key}" data-note="${esc(entry.id)}" ${extraAttributes} aria-pressed="${mine?.stamp === key}">${icon(stampIcons[key], 20)}${stamps[key]}</button>`,
+  )
+  const used = active.map(
+    (row) =>
+      `<li>${animalIcon(shownAnimal(row, actor), 24)} ${esc(shownName(row, actor))} · ${stamps[row.stamp]}</li>`,
+  )
+  return `<div class="stamp-options">${options.join('')}</div>${used.length ? '<ul>' + used.join('') + '</ul>' : ''}`
+}
+
 export function stampButtons(entry, actor, icon) {
   if (entry?.visibility !== 'shared') return ''
-  const active = cleanReactions(entry.reactions).filter((row) => row.stamp)
-  const mine = active.find((row) => row.actor.id === actor.id)?.stamp
-  const stamp =
-    mine || (['美食', '饮品'].includes(entry.category) ? 'taste' : 'visit')
-  const others = active.filter((row) => row.actor.id !== actor.id)
-  const label = others
-    .map((row) => row.actor.name + '盖了「' + stamps[row.stamp] + '」')
-    .join('，')
-  return `<div class="card-stamps"><button class="quick-stamp" type="button" data-act-stamp="${stamp}" data-note="${esc(entry.id)}" aria-pressed="${Boolean(mine)}" aria-label="${esc(stamps[stamp])}">${icon(mine ? 'heart' : 'sparkle', 14)}<span>${stamps[stamp]}</span></button><button class="choose-stamp" type="button" data-action="choose-stamp" data-value="${esc(entry.id)}" aria-label="选择回应贴纸" aria-haspopup="dialog">${others.length ? `<span title="${esc(label)}">${animalIcon(others[0].actor.animal, 17)} ${others.length}</span>` : '···'}</button></div>`
+  const active = visibleStamps(entry)
+  const mine = active.find((row) => row.actor.id === actor.id)
+  const selected =
+    mine?.stamp || active[0]?.stamp || stampChoices(entry.category)[0]
+  const groups = [...new Set([selected, ...active.map((row) => row.stamp)])]
+  const chips = groups.map((key, i) => {
+    const rows = active.filter((row) => row.stamp === key)
+    const label = rows.length ? stamps[key] : '+ 盖个章'
+    const faces = rows
+      .map(
+        (row) =>
+          `<span data-animal="${shownAnimal(row, actor)}" title="${esc(shownName(row, actor))}">${animalIcon(shownAnimal(row, actor), 20)}</span>`,
+      )
+      .join('')
+    const authors = rows.map((row) => shownName(row, actor)).join('、')
+    return `<button class="${i ? 'peer-stamp' : 'quick-stamp'}${faces ? ' is-stamped' : ''}" type="button" data-act-stamp="${key}" data-note="${esc(entry.id)}" aria-pressed="${mine?.stamp === key}" title="${esc(authors ? authors + ' · ' + label : stamps[key])}">${faces ? '<span class="stamp-faces">' + faces + '</span>' : ''}<span>${label}</span></button>`
+  })
+  return `<div class="card-stamps">${chips.join('')}<button class="choose-stamp" type="button" data-action="choose-stamp" data-value="${esc(entry.id)}" aria-label="选择回应贴纸" aria-haspopup="dialog">${icon('down', 14)}</button></div>`
 }

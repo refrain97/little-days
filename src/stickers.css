@@ -33,19 +33,41 @@
   gap: 4px;
   color: inherit;
 }
-.quick-stamp {
+.quick-stamp,
+.peer-stamp {
   font-size: 11px;
   padding: 2px 8px;
   border: 1px dashed #bf9d85;
   border-radius: 12px 9px 12px 8px;
   background: #fff9ef;
 }
-.quick-stamp[aria-pressed='true'],
+.card-stamps .is-stamped,
 .stamp-options button[aria-pressed='true'] {
   background: #f6d4c9;
   border-style: solid;
   color: #714337;
   box-shadow: 0 1px 0 #916c51;
+}
+.card-stamps {
+  flex-wrap: wrap;
+}
+.stamp-faces {
+  display: inline-flex;
+}
+.stamp-faces > span + span {
+  margin-left: -5px;
+}
+.stamp-faces > span {
+  display: inline-flex;
+}
+.card-stamps .is-stamped {
+  border-radius: 9px 12px 10px 8px;
+  padding-left: 3px;
+}
+.card-stamps .is-stamped[data-act-stamp='drink'],
+.card-stamps .is-stamped[data-act-stamp='cool'],
+.card-stamps .is-stamped[data-act-stamp='healed'] {
+  background: #e3edcf;
 }
 .choose-stamp {
   background: transparent;
@@ -154,5 +176,53 @@
   }
   .animal-picker > div {
     gap: 4px;
+  }
+}
+
+.cloud-profile-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  align-items: start;
+}
+.cloud-profile-fields label {
+  min-width: 0;
+}
+.cloud-field :is(input, select) {
+  min-height: 44px;
+}
+.cloud-animal {
+  position: relative;
+  display: block;
+}
+.cloud-animal select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.25rem 0.55rem 36px;
+  font: inherit;
+  font-size: 16px;
+  color: inherit;
+  background: #fffcf5;
+  border: 1px solid #cebea5;
+  border-radius: 9px;
+}
+.cloud-animal > span {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.settings-inner :is(.cloud-tools, .backup-tools) button,
+.settings-inner .cloud-tools summary {
+  min-height: 40px;
+}
+.settings-inner .cloud-tools summary {
+  line-height: 1.5;
+  align-content: center;
+}
+@media (max-width: 380px) {
+  .cloud-profile-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
 }

@@ -1,4 +1,8 @@
-import { breakfastKinds } from './breakfast-model.js'
+import {
+  breakfastKinds,
+  breakfastIdeaKey,
+  breakfastIdeaRange,
+} from './breakfast-model.js'
 import { readBreakfast } from './breakfast-store.js'
 import { cleanStickerAuthor } from './stickers.js'
 import { CATEGORIES } from './journal.js'
@@ -12,6 +16,7 @@ import {
   transactionDone,
   writeSplit,
   announce,
+  setPrivacyMarker,
 } from './storage.js'
 import { normalPlan, exportPlanSnapshot, notifyPlanRestore } from './plans.js'
 import { dataMediaType, blobDataUrl } from './media-store.js'
@@ -84,7 +89,8 @@ function checkRecords(records) {
     )
     requireValue(
       (r.isBreakfast === undefined || bool(r.isBreakfast)) &&
-        (r.breakfastKind === undefined || Object.hasOwn(breakfastKinds, r.breakfastKind)),
+        (r.breakfastKind === undefined ||
+          Object.hasOwn(breakfastKinds, r.breakfastKind)),
       '早餐标签',
     )
     requireValue(
@@ -222,6 +228,30 @@ function checkPreferences(prefs) {
   for (const [k, v] of Object.entries(prefs))
     requireValue(allows[k](v), '偏好设置')
 }
+function checkBreakfast(breakfast, privateOnly = false) {
+  requireValue(object(breakfast) && Array.isArray(breakfast.ideas), '早餐池')
+  uniqueIds(breakfast.ideas, '早餐点子')
+  for (const idea of breakfast.ideas) {
+    requireValue(
+      /^idea-[a-z0-9-]+$/i.test(idea.id) &&
+        nonempty(idea.title) &&
+        idea.title.length <= 80 &&
+        Object.hasOwn(breakfastKinds, idea.kind) &&
+        (privateOnly ? isPrivate(idea) : scopes.includes(idea.visibility)) &&
+        timestamp(idea.createdAt) &&
+        (!idea.stickerAuthor || cleanStickerAuthor(idea.stickerAuthor)),
+      '早餐点子',
+    )
+  }
+  requireValue(
+    breakfast.choice == null ||
+      (object(breakfast.choice) &&
+        nonempty(breakfast.choice.id) &&
+        date(breakfast.choice.day)),
+    '早餐印章',
+  )
+}
+
 export function validateBackup(data) {
   if (!object(data) || data.format !== signature)
     throw new Error('请选择「小日子」导出的 JSON 备份。')
@@ -243,29 +273,12 @@ export function validateBackup(data) {
         '店铺档案',
       )
   }
-  if (data.breakfast !== undefined) {
-    const breakfast = data.breakfast
-    requireValue(object(breakfast) && Array.isArray(breakfast.ideas), '早餐池')
-    uniqueIds(breakfast.ideas, '早餐点子')
-    for (const idea of breakfast.ideas) {
-      requireValue(
-        /^idea-[a-z0-9-]+$/i.test(idea.id) &&
-          nonempty(idea.title) && idea.title.length <= 80 &&
-          Object.hasOwn(breakfastKinds, idea.kind) && idea.visibility === 'shared' &&
-          timestamp(idea.createdAt) &&
-          (!idea.stickerAuthor || cleanStickerAuthor(idea.stickerAuthor)),
-        '早餐点子',
-      )
-    }
-    requireValue(
-      breakfast.choice == null ||
-        (object(breakfast.choice) && nonempty(breakfast.choice.id) && date(breakfast.choice.day)),
-      '早餐印章',
-    )
-  }
+  if (data.breakfast !== undefined) checkBreakfast(data.breakfast)
   checkPreferences(data.preferences)
   return {
-    records: data.records.length, plans: data.plans.length, archived,
+    records: data.records.length,
+    plans: data.plans.length,
+    archived,
     ...(data.breakfast ? { breakfastIdeas: data.breakfast.ideas.length } : {}),
   }
 }
@@ -347,6 +360,7 @@ export function privateBackupStatus(
   records = [],
   plans = [],
   now = Date.now(),
+  breakfast = [],
 ) {
   let saved
   try {
@@ -354,7 +368,7 @@ export function privateBackupStatus(
   } catch {}
   const lastBackupAt = timestamp(saved) ? saved : ''
   let oldest = Infinity
-  for (const items of [records, plans])
+  for (const items of [records, plans, breakfast])
     for (const item of items) {
       if (!isPrivate(item)) continue
       const created = Date.parse(item.createdAt)
@@ -404,12 +418,19 @@ export function validatePrivateBackup(data) {
     ),
     '私人归档',
   )
-  return { records: data.records.length, plans: data.plans.length, archived }
+  if (data.breakfast !== undefined) checkBreakfast(data.breakfast, true)
+  return {
+    records: data.records.length,
+    plans: data.plans.length,
+    archived,
+    ...(data.breakfast ? { breakfastIdeas: data.breakfast.ideas.length } : {}),
+  }
 }
 
 export async function exportPrivateBackup() {
-  let snapshot
+  let snapshot, breakfastSnapshot
   const records = await exportRecords((tx) => {
+    breakfastSnapshot = readBreakfast(tx)
     snapshot = exportPlanSnapshot(tx)
   }, isPrivate)
   const backup = {
@@ -418,6 +439,7 @@ export async function exportPrivateBackup() {
     exportedAt: new Date().toISOString(),
     records,
     plans: (await snapshot).plans.filter(isPrivate),
+    breakfast: { ideas: (await breakfastSnapshot).ideas.filter(isPrivate) },
   }
   // A private export must be self-contained even for a private edit of an example photo.
   const builtIns = new Map()
@@ -459,6 +481,7 @@ export async function importPrivateBackup(data) {
     settings = tx.objectStore('settings')
   const oldRecords = records.getAll(),
     oldPlans = plans.getAll()
+  const ideas = settings.getAll(breakfastIdeaRange())
   const receipts = settings.getAll(
     IDBKeyRange.bound(receiptPrefix, receiptPrefix + '\uffff'),
   )
@@ -470,11 +493,16 @@ export async function importPrivateBackup(data) {
         oldRecords.result,
         oldPlans.result,
         receipts.result,
+        ideas.result,
       )
       const prior = new Map(oldRecords.result.map((row) => [row.id, row]))
       for (const row of next.records)
         writeSplit({ records, media }, row, prior.get(row.id))
       for (const row of next.plans) plans.put(row)
+      for (const idea of next.breakfast) {
+        settings.put(idea, breakfastIdeaKey(idea.id))
+        setPrivacyMarker(tx, 'breakfast', idea.id, true)
+      }
       for (const row of next.receipts)
         settings.put(
           row,

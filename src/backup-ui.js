@@ -36,7 +36,7 @@ function controls(scope, privateOnly) {
 export function backupControls() {
   return `<section class="backup-tools" aria-labelledby="private-backup-title">
     <h3 id="private-backup-title">私人手记备份</h3>
-    <p>把「仅自己」的手记、照片、原声、清单及归档收进一个 JSON 文件。</p>
+    <p>把「仅自己」的手记、照片、原声、早餐点子、清单及归档收进一个 JSON 文件。</p>
     <p data-private-backup-date></p>
     ${controls('private-backup', true)}
     <h3 id="backup-title">整本备份与迁移</h3>
@@ -45,10 +45,20 @@ export function backupControls() {
   </section>`
 }
 
-export function refreshPrivateBackupStatus(root, entries, plans) {
+export function refreshPrivateBackupStatus(
+  root,
+  entries,
+  plans,
+  breakfast = [],
+) {
   const label = root.querySelector('[data-private-backup-date]')
   if (!label) return
-  const { lastBackupAt, due } = privateBackupStatus(entries, plans)
+  const { lastBackupAt, due } = privateBackupStatus(
+    entries,
+    plans,
+    Date.now(),
+    breakfast,
+  )
   const last = lastBackupAt
     ? new Date(lastBackupAt).toLocaleString('zh-CN', {
         year: 'numeric',
@@ -99,14 +109,14 @@ async function writeFile(handle, blob) {
 export function bindBackupControls(
   root,
   onRestored,
-  { entries = [], plans = [] } = {},
+  { entries = [], plans = [], breakfast = [] } = {},
 ) {
   const panel = root.querySelector('.backup-tools')
   const busy = (value) => {
     for (const button of panel.querySelectorAll('button'))
       button.disabled = value
   }
-  refreshPrivateBackupStatus(root, entries, plans)
+  refreshPrivateBackupStatus(root, entries, plans, breakfast)
   for (const privateOnly of [true, false]) {
     const scope = privateOnly ? 'private-backup' : 'backup'
     const at = (name) =>
@@ -139,7 +149,7 @@ export function bindBackupControls(
     function saved() {
       try {
         markPrivateBackupSaved(exportedAt)
-        refreshPrivateBackupStatus(root, entries, plans)
+        refreshPrivateBackupStatus(root, entries, plans, breakfast)
         status.textContent = '备份已保存，已更新上次备份时间。'
       } catch {
         status.textContent = '文件已保存，本机暂时无法记录备份时间。'

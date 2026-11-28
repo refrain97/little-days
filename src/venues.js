@@ -146,7 +146,7 @@ function venueDetail(venue, renderCard) {
         <span class="vn-detail-visit">${icon('store', 17)}${lastDate ? `最近记录于 ${html(lastDate)}` : '店铺手记'}</span>
         <h2>${html(name)}</h2>
         ${venue.profile?.aliases?.length ? `<p class="venue-alias">也叫 ${html(venue.profile.aliases.join('、'))}</p>` : ''}
-        ${venue.profile || entries.some((e) => !e.isSample) ? `<button type="button" class="vn-profile-link" data-action="edit-place" data-value="${html(key)}">${icon('pen', 13)}编辑店铺档案</button>` : ''}
+        ${venue.profile || entries.some((e) => !e.isSample && e.visibility === 'shared') ? `<button type="button" class="vn-profile-link" data-action="edit-place" data-value="${html(key)}">${icon('pen', 13)}编辑店铺档案</button>` : ''}
         <div class="vn-metrics">
           <div><strong>${avg ? `${icon('star', 16)}${avg}` : '待评分'}</strong><span>平均评分</span></div>
           <div><strong>${entries.length}</strong><span>到店手记</span></div>

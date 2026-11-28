@@ -68,6 +68,8 @@ async function handle(req, res) {
       data = site.get(name)
       if (!data) throw new Error()
     }
+    if (/\.[a-f0-9]{16}\.[a-z0-9]+$/.test(name))
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
     res.writeHead(200, {
       'Content-Type': mime[extname(name)] || 'application/octet-stream',
       'Content-Length': data.length,

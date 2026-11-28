@@ -1,4 +1,8 @@
-import { restoreBreakfast } from './breakfast-model.js'
+import {
+  restoreBreakfast,
+  breakfastIdeaRange,
+  breakfastIdeaKey,
+} from './breakfast-model.js'
 import { cleanReactions, stamps } from './stickers.js'
 import { readProfile, stickerActor } from './cloud-profile.js'
 import { prepareJournalPhoto, makeJournalThumbnail } from './device-ai.js'
@@ -138,6 +142,18 @@ export function writeSplit(stores, entry, previous, paths = {}) {
     }
     deleteMedia(media, prior, kind)
   }
+  if (paths.cloudThumbPath) meta.cloudThumbPath = paths.cloudThumbPath
+  else if (
+    previous?.image === meta.image &&
+    previous?.cloudThumbPath &&
+    !Object.hasOwn(paths, 'cloudThumbPath')
+  )
+    meta.cloudThumbPath = previous.cloudThumbPath
+  if (paths.thumbnail && isLocalMedia(meta.image))
+    media.put(
+      dataMediaBinary(paths.thumbnail, 'image'),
+      thumbnailKey(meta.image),
+    )
   records.put(meta)
   return meta
 }
@@ -175,7 +191,7 @@ function openDatabase() {
     if (!globalThis.indexedDB) return reject(storageUnavailable())
     let req
     try {
-      req = indexedDB.open('little-days', 4)
+      req = indexedDB.open('little-days', 5)
     } catch {
       return reject(storageUnavailable())
     }
@@ -195,7 +211,11 @@ function openDatabase() {
       if (!db.objectStoreNames.contains('records'))
         db.createObjectStore('records', { keyPath: 'id' })
       const records = tx.objectStore('records')
-      for (const path of ['cloudPhotoPath', 'cloudAudioPath']) {
+      for (const path of [
+        'cloudPhotoPath',
+        'cloudThumbPath',
+        'cloudAudioPath',
+      ]) {
         if (!records.indexNames.contains(path)) records.createIndex(path, path)
       }
       if (!db.objectStoreNames.contains('settings'))
@@ -591,10 +611,13 @@ async function cacheThumbnail(db, ref, blob) {
   const bytes = await blob.arrayBuffer()
   const tx = db.transaction('media', 'readwrite')
   const media = tx.objectStore('media')
-  const current = media.getKey(ref)
-  current.onsuccess = () => {
-    if (current.result !== undefined)
-      media.put({ bytes, type: blob.type }, thumbnailKey(ref))
+  const current = media.getKey(ref),
+    key = thumbnailKey(ref)
+  const existing = media.getKey(key)
+  existing.onsuccess = () => {
+    // An authenticated thumbnail may have arrived while the legacy copy was being encoded.
+    if (current.result !== undefined && existing.result === undefined)
+      media.put({ bytes, type: blob.type }, key)
   }
   await transactionDone(tx)
 }
@@ -831,14 +854,27 @@ export async function removeRecord(id) {
   await transactionDone(tx)
   announceMutation(tx)
 }
-export async function toggleStamp(id, stamp) {
+const cloudTables = new Map([
+  ['entries', 'records'],
+  ['freetime', 'plans'],
+  ['places', 'places'],
+  ['breakfast', 'settings'],
+])
+const objectKey = (kind, id) =>
+  kind === 'breakfast' ? breakfastIdeaKey(id) : id
+
+export async function toggleStamp(id, stamp, kind = 'entries') {
   if (!Object.hasOwn(stamps, stamp)) throw new Error('这枚贴纸暂不可用。')
   const actor = stickerActor()
   const db = await journalDatabase()
-  const tx = db.transaction('records', 'readwrite')
-  const table = tx.objectStore('records')
+  const tableName = cloudTables.get(kind)
+  if (!['entries', 'freetime', 'breakfast'].includes(kind))
+    throw new Error('无法给此项盖章。')
+  const tx = db.transaction([...new Set(['settings', tableName])], 'readwrite')
+  const table = tx.objectStore(tableName),
+    key = objectKey(kind, id)
   let saved
-  const req = table.get(id)
+  const req = table.get(key)
   req.onsuccess = () => {
     const row = req.result
     if (row?.visibility !== 'shared') return
@@ -856,12 +892,14 @@ export async function toggleStamp(id, stamp) {
         next,
       ],
     }
-    table.put(saved)
+    if (kind === 'breakfast') table.put(saved, key)
+    else table.put(saved)
+    if (!row.isSample) markOutbox(tx)
   }
   await transactionDone(tx)
-  if (!saved) throw new Error('这篇手记已移除或改为仅自己。')
-  announce('local-only')
-  return createEntry(saved)
+  if (!saved) throw new Error('这条记录已移除或改为仅自己。')
+  announceMutation(tx)
+  return kind === 'entries' ? createEntry(saved) : saved
 }
 
 export async function toggleRecordFavorite(id) {
@@ -901,11 +939,16 @@ export async function replaceRecords(rows, applyLocal, notebook) {
     try {
       // Record withdrawals in the same replacement transaction, including rows absent from the backup.
       const oldRecords = stores.records.getAll()
+      const oldBreakfast =
+        notebook?.breakfast && settings.getAll(breakfastIdeaRange())
       const oldPlans = tx.objectStore('plans').getAll()
       oldPlans.onsuccess = () => {
         for (const [kind, old, next] of [
           ['entries', oldRecords.result, rows],
           ['freetime', oldPlans.result, notebook?.plans || oldPlans.result],
+          ...(oldBreakfast
+            ? [['breakfast', oldBreakfast.result, notebook.breakfast.ideas]]
+            : []),
         ]) {
           const present = new Map(next.map((row) => [row.id, row]))
           for (const row of old)
@@ -1058,7 +1101,10 @@ export function localPrivacy(records, plans, withdrawals = []) {
         } catch {}
     }
   } while (count !== entries.size + freetime.size)
-  return { entries, freetime, places: new Set() }
+  const breakfast = new Set(
+    withdrawals.filter((row) => row.kind === 'breakfast').map((row) => row.id),
+  )
+  return { entries, freetime, places: new Set(), breakfast }
 }
 export function setPrivacyMarker(tx, kind, id, restricted) {
   const table = tx.objectStore('settings'),
@@ -1267,20 +1313,40 @@ export async function sharedLocalState() {
   const outbox = tx.objectStore('settings').get('shared-outbox-revision')
   const withdrawals = readWithdrawals(tx)
   const withdrawn = tx.objectStore('settings').get('withdrawn-places')
-  const all = ['records', 'plans', 'places'].map((name) => {
-    const table = tx.objectStore(name),
-      read = table.getAll()
+  const identity = actor && stickerActor()
+  const all = ['records', 'plans', 'places', 'settings'].map((name) => {
+    const table = tx.objectStore(name)
+    const read =
+      name === 'settings' ? table.getAll(breakfastIdeaRange()) : table.getAll()
     read.onsuccess = () => {
+      if (!identity) return
       for (const row of read.result) {
         if (
-          actor &&
+          row.visibility !== 'shared' ||
+          row.isSample ||
+          (row.isSample !== false && String(row.id).startsWith('sample-'))
+        )
+          continue
+        let changed = false
+        if (
           !row.author &&
-          row.visibility !== 'private' &&
-          !row.isSample &&
-          !String(row.id).startsWith('sample-')
+          (!row.stickerAuthor || row.stickerAuthor.id === identity.id)
         ) {
           row.author = actor
-          table.put(row)
+          row.stickerAuthor = identity
+          changed = true
+        } else if (
+          row.stickerAuthor?.id === identity.id &&
+          (row.stickerAuthor.name !== identity.name ||
+            row.stickerAuthor.animal !== identity.animal)
+        ) {
+          row.author = actor
+          row.stickerAuthor = identity
+          changed = true
+        }
+        if (changed) {
+          if (name === 'settings') table.put(row, breakfastIdeaKey(row.id))
+          else table.put(row)
         }
       }
     }
@@ -1291,6 +1357,7 @@ export async function sharedLocalState() {
     entries: all[0].result,
     freetime: all[1].result,
     places: all[2].result,
+    breakfast: all[3].result,
     withdrawn: withdrawn.result || [],
     withdrawals: withdrawals.result,
     outboxRevision: outbox.result || '',
@@ -1301,19 +1368,19 @@ export async function sharedLocalState() {
 // that replaces the item. Downloading an attachment can take longer than a local edit.
 export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
   const db = await journalDatabase()
-  const tableName = { entries: 'records', freetime: 'plans', places: 'places' }[
-    kind
-  ]
+  const tableName = cloudTables.get(kind)
+  const key = objectKey(kind, id)
   if (!tableName) throw new Error('不支持的同步内容。')
   const tx = db.transaction(recordStores, 'readwrite'),
     done = transactionDone(tx)
   const table = tx.objectStore(tableName),
-    current = table.get(id)
+    current = table.get(key)
   const withdrawals = readWithdrawals(tx)
   const withdrawn = tx.objectStore('settings').get('withdrawn-places'),
     records = tx.objectStore('records').getAll(),
     plans = tx.objectStore('plans').getAll()
   let accepted = false,
+    stored = null,
     cause
   plans.onsuccess = () => {
     try {
@@ -1328,46 +1395,23 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
       )
         return
       if (kind === 'entries' && value) {
-        const previous = current.result
-        const next = createEntry({
-          ...value,
-          stickerAuthor: previous?.stickerAuthor,
-          reactions: previous?.reactions,
-          isBreakfast: previous?.isBreakfast,
-          breakfastKind: previous?.breakfastKind,
-        })
+        const next = createEntry(value)
         if (paths.keepPhoto && current.result?.image)
           next.image = current.result.image
         if (paths.keepAudio && current.result?.audio)
           next.audio = current.result.audio
-        writeSplit(storesFor(tx), next, current.result, paths)
+        stored = writeSplit(storesFor(tx), next, current.result, paths)
       } else if (value) {
-        const previous = current.result
-        const next = { ...value }
-        if (previous?.stickerAuthor) next.stickerAuthor = previous.stickerAuthor
-        if (kind === 'freetime') {
-          for (const key of ['completions', 'reopened']) {
-            const authors = new Map(
-              (previous?.[key] || []).map((row) => [
-                row.key,
-                row.stickerAuthor,
-              ]),
-            )
-            next[key] = (next[key] || []).map((row) =>
-              authors.get(row.key)
-                ? { ...row, stickerAuthor: authors.get(row.key) }
-                : row,
-            )
-          }
-        }
-        table.put(next)
+        if (kind === 'breakfast') table.put(value, key)
+        else table.put(value)
+        stored = value
       } else {
         if (kind === 'entries')
           for (const key of kinds)
             deleteMedia(tx.objectStore('media'), current.result?.[key], key)
         if (kind === 'places' && current.result)
           suppressPlace(tx, current.result)
-        table.delete(id)
+        table.delete(key)
       }
       accepted = true
     } catch (e) {
@@ -1381,10 +1425,15 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
     throw cause || e
   }
   if (accepted) announce('cloud', true)
-  return accepted
+  return accepted ? { stored } : false
 }
 
-export async function readSharedAttachment(id, kind, expectedRef) {
+export async function readSharedAttachment(
+  id,
+  kind,
+  expectedRef,
+  thumbnail = false,
+) {
   const db = await journalDatabase()
   if (!kinds.includes(kind)) throw new Error('共享附件不可用。')
   const tx = db.transaction(['records', 'media']),
@@ -1407,6 +1456,7 @@ export async function readSharedAttachment(id, kind, expectedRef) {
     throw new Error('附件或可见范围已改变，请重新同步。')
   if (!isLocalMedia(ref)) return ref
   const value = result.result
+  if (thumbnail) return readMediaBlob(ref, 'thumbnail')
   return value instanceof Blob
     ? value
     : new Blob([value.bytes], { type: value.type })
@@ -1416,25 +1466,29 @@ export async function readSharedAttachment(id, kind, expectedRef) {
 // This index avoids reading private attachments or scanning every journal entry.
 export async function readCachedAttachment(path, type) {
   const photo = /^shared\/photos\/[a-f0-9]{40}\.jpg$/.test(path)
-  if (!photo && !/^shared\/audio\/[a-f0-9]{40}\.bin$/.test(path)) return null
+  const thumb = /^shared\/thumbs\/[a-f0-9]{40}\.jpg$/.test(path)
+  if (!thumb && !photo && !/^shared\/audio\/[a-f0-9]{40}\.bin$/.test(path))
+    return null
   const db = await journalDatabase(),
     tx = db.transaction(['records', 'media'])
   const table = tx.objectStore('records'),
     media = tx.objectStore('media')
   const cursor = table
-    .index(photo ? 'cloudPhotoPath' : 'cloudAudioPath')
+    .index(
+      thumb ? 'cloudThumbPath' : photo ? 'cloudPhotoPath' : 'cloudAudioPath',
+    )
     .openCursor(IDBKeyRange.only(path))
   let data
   cursor.onsuccess = () => {
     const next = cursor.result
     if (!next) return
     const row = next.value,
-      ref = row[photo ? 'image' : 'audio']
+      ref = row[photo || thumb ? 'image' : 'audio']
     if (row.visibility !== 'shared' || row.isSample || !isLocalMedia(ref)) {
       next.continue()
       return
     }
-    const read = media.get(ref)
+    const read = media.get(thumb ? thumbnailKey(ref) : ref)
     read.onsuccess = () => {
       if (read.result) data = read.result
       else next.continue()

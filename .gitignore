@@ -17,11 +17,14 @@
 /scripts/*
 !/scripts/build.mjs
 !/scripts/mobile-qa.mjs
+!/scripts/pwa-qa.mjs
+!/scripts/cloud-qa.mjs
 !/scripts/install-hooks.mjs
 !/scripts/pre-push
 !/tests/
 /tests/*
 !/tests/sync.test.mjs
+!/tests/github-fixture.mjs
 !/tests/recorder.test.mjs
 !/tests/private-backup.test.mjs
 !/tests/storage-safety.test.mjs

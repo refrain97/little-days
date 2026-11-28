@@ -811,7 +811,11 @@ function meanRating(entries) {
     : 0
 }
 
-export function groupVenues(entries, profiles = []) {
+export function groupVenues(
+  entries,
+  profiles = [],
+  { includePrivate = false } = {},
+) {
   const aliases = new Map()
   for (const profile of profiles) {
     for (const name of [profile.name, ...(profile.aliases || [])])
@@ -820,7 +824,7 @@ export function groupVenues(entries, profiles = []) {
   const groups = new Map()
   for (const entry of [...entries].sort(chronological)) {
     const { diningSource, venueName } = diningFields(entry, entry.category)
-    if (entry.visibility === 'private') continue
+    if (entry.visibility === 'private' && !includePrivate) continue
     const profile = aliases.get(venueKey(venueName))
     const key = venueKey(profile?.name || venueName)
     if (diningSource !== 'out' || !key) continue

@@ -6,6 +6,9 @@ import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { devices, webkit } from 'playwright'
 
+import { checkTwoDevices } from './cloud-qa.mjs'
+import { checkPwaUpdates } from './pwa-qa.mjs'
+
 const viewport = { width: 390, height: 844 }
 const screenshots = resolve(
   process.env.MOBILE_QA_SCREENSHOTS || 'qa-screenshots',
@@ -340,8 +343,10 @@ async function checkDialog(page, spec) {
     spec.open + ' 输入过程中底层页面滚动',
   )
   await screenshot(page, spec.name + '-keyboard', true)
+  const saveStarted = Date.now()
   await save.tap()
   await dialog.waitFor({ state: 'detached' })
+  assert(Date.now() - saveStarted < 10000, spec.save + ' 无 Key 保存超过 10 秒')
   await keyboardViewport(page, false)
   assert(
     await page
@@ -357,6 +362,115 @@ async function checkDialog(page, spec) {
     spec.open +
       ' · 模拟键盘可视高度 420px · 输入框与保存按钮可见 · 点按保存后解锁',
   )
+}
+
+async function checkPlanResponse(page) {
+  await turnTo(page, 'free')
+  const row = page
+    .locator('.ft-task-body')
+    .filter({ hasText: '周末买花' })
+    .first()
+  await row.tap()
+  const detail = page.locator('.plan-detail')
+  const title = await detail.locator('h2').textContent()
+  await detail.locator('.item-stamps summary').tap()
+  await detail.locator('[data-act-stamp=healed]').tap()
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('.plan-detail [data-act-stamp=healed]')
+        ?.getAttribute('aria-pressed') === 'true',
+  )
+  assert.equal(await detail.locator('h2').textContent(), title)
+  await detail.locator('.item-stamps li').first().waitFor()
+  await page.locator('.close-sheet').tap()
+  pass('有空 · 伙伴对同一清单事项盖章后仍停留在原事项')
+}
+
+async function checkJournalPolish(page) {
+  await turnTo(page, 'home')
+  for (const category of ['回忆', '灵感', '美食', '饮品']) {
+    const cards = page.locator('.entry-card[data-category="' + category + '"]')
+    assert(await cards.count(), category + ' 缺少验收样本')
+    if (category === '回忆' || category === '灵感') {
+      assert.equal(
+        await cards.locator('.card-rating').count(),
+        0,
+        category + ' 不应显示星级和态度',
+      )
+    } else {
+      assert(
+        await cards.locator('.card-rating b').count(),
+        category + ' 缺少评分',
+      )
+    }
+  }
+  const drink = page.locator('.entry-card').filter({
+    has: page.getByRole('heading', { name: '午后的冰拿铁', exact: true }),
+  })
+  await drink.locator('.choose-stamp').tap()
+  const dialog = page.getByRole('dialog', { name: '盖个小回应' })
+  assert.deepEqual(await dialog.locator('[data-act-stamp]').allTextContents(), [
+    '我也想喝！',
+    '看起来好冰爽',
+  ])
+  await screenshot(page, 'drink-stamps')
+  await dialog.locator('.close-sheet').tap()
+  pass('手记 · 回忆与灵感无星级和态度 · 美食饮品保留评分 · 饮品专属盖章')
+}
+
+async function checkSettings(page) {
+  await page.locator('.mobile-settings').tap()
+  async function inspect(selector, label) {
+    const control = page.locator(selector)
+    await control.evaluate(async (el) => {
+      el.scrollIntoView({ block: 'center', behavior: 'instant' })
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      )
+    })
+    await assertExposed(control, label)
+    return control
+  }
+  await (await inspect('[data-space-summary]', '云空间配置入口')).tap()
+  for (const [key, label] of [
+    ['repo', '私库名'],
+    ['name', '昵称'],
+    ['animal', '动物头像'],
+    ['token', '设备 Token'],
+  ]) {
+    await inspect('[data-space-' + key + ']', label)
+  }
+  await inspect('[data-connect]', '验证并连接')
+  await screenshot(page, 'settings-cloud')
+  const trash = await inspect('[data-trash]', '回收站入口')
+  await trash.tap()
+  await (await inspect('.ai-tools summary', 'AI 设置')).tap()
+  for (const [selector, label] of [
+    ['[data-ai-endpoint]', 'AI 接口'],
+    ['[data-ai-model]', '模型名'],
+    ['[data-ai-key]', '本机 Key'],
+    ['[data-ai-form] [type=submit]', '保存 AI 配置'],
+  ]) {
+    await inspect(selector, label)
+  }
+  await screenshot(page, 'settings-ai')
+  await inspect('[data-private-backup-export]', '导出私人备份')
+  const choose = await inspect('[data-private-backup-choose]', '导入私人备份')
+  await screenshot(page, 'settings-private-backup')
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    choose.tap(),
+  ])
+  await chooser.setFiles([])
+  assert(
+    await page
+      .locator('.sheet')
+      .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    '设置面板横向溢出',
+  )
+  await page.locator('.close-sheet').tap()
+  pass('390px 设置 · 云空间、回收站、AI 与私人备份逐控件无遮挡且可操作')
 }
 
 async function checkStickers(page) {
@@ -383,7 +497,14 @@ async function checkStickers(page) {
     await card.locator('.author-mark').getAttribute('data-animal'),
     'rabbit',
   )
+  assert.equal(
+    (await card.locator('.quick-stamp').innerText()).trim(),
+    '+ 盖个章',
+  )
   await card.locator('.quick-stamp').tap()
+  await card
+    .locator('.quick-stamp.is-stamped .stamp-faces [data-animal=rabbit]')
+    .waitFor()
   assert.equal(
     await card.locator('.quick-stamp').getAttribute('aria-pressed'),
     'true',
@@ -391,9 +512,9 @@ async function checkStickers(page) {
   await card.locator('.choose-stamp').tap()
   const sheet = page.getByRole('dialog', { name: '盖个小回应' })
   await screenshot(page, 'reaction-stickers')
-  await sheet.getByRole('button', { name: '厨神附体' }).tap()
+  await sheet.getByRole('button', { name: '好治愈' }).tap()
   await page.reload({ waitUntil: 'domcontentloaded' })
-  const applied = card.getByRole('button', { name: '厨神附体' })
+  const applied = card.getByRole('button', { name: '好治愈' })
   assert.equal(await applied.getAttribute('aria-pressed'), 'true')
   await applied.tap()
   assert.equal(
@@ -404,7 +525,7 @@ async function checkStickers(page) {
     const { createCloudAdapter } = await import('./src/cloud-local.js')
     const { toggleStamp } = await import('./src/storage.js')
     const adapter = createCloudAdapter()
-    const before = JSON.stringify(await adapter.snapshot())
+    const before = await adapter.snapshot()
     const key = 'little.days.sticker-person'
     const original = localStorage.getItem(key)
     try {
@@ -416,11 +537,18 @@ async function checkStickers(page) {
     } finally {
       localStorage.setItem(key, original)
     }
-    const updated = await toggleStamp(id, 'aroma')
+    const updated = await toggleStamp(id, 'healed')
     if (updated.reactions.filter((row) => row.stamp).length !== 2)
       throw Error('两枚回应互相覆盖')
-    const after = JSON.stringify(await adapter.snapshot())
-    if (before !== after) throw Error('本机贴纸误改了共享队列或云端数据格式')
+    const after = await adapter.snapshot()
+    const queued = after.entities.find(
+      (e) => e.kind === 'entries' && e.id === id,
+    )
+    if (
+      queued?.data.reactions.filter((r) => r.stamp).length !== 2 ||
+      after.outboxRevision === before.outboxRevision
+    )
+      throw Error('共享回应未进入持久化同步队列')
   }, id)
   pass('共享手记 · 动物头像 · 盖章、更换、刷新保留、再次点按撤回')
 }
@@ -487,6 +615,30 @@ async function checkBreakfast(page) {
       .tap()
   await page.locator('[data-breakfast-stamp]').first().waitFor()
   await screenshot(page, 'breakfast-decided')
+  await pool.getByRole('button', { name: /芝麻豆浆杯/ }).tap()
+  await draw.locator('.item-stamps summary').tap()
+  const response = draw.locator('[data-act-stamp=taste]')
+  await response.tap()
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('.bf-slip [data-act-stamp=taste]')
+        ?.getAttribute('aria-pressed') === 'true',
+  )
+  await draw.locator('[data-action=breakfast-edit]').tap()
+  const editor = page.getByRole('dialog', { name: '编辑早餐点子' })
+  await editor.locator('[name=title]').fill('芝麻热豆浆')
+  await editor.locator('[name=visibility]').selectOption('private')
+  await editor.getByRole('button', { name: '保存修改' }).tap()
+  await pool.getByRole('button', { name: /芝麻热豆浆/ }).tap()
+  assert.equal(await draw.locator('.item-stamps').count(), 0)
+  await draw.locator('[data-action=breakfast-edit]').tap()
+  await editor.getByRole('button', { name: '移除这个点子' }).tap()
+  await page.getByRole('button', { name: '确认移除' }).tap()
+  await pool
+    .getByRole('button', { name: /芝麻热豆浆/ })
+    .waitFor({ state: 'detached' })
+  pass('早餐点子 · 双人盖章、编辑、改为仅自己、移除')
   pass(
     '早餐池 · 10:29 与 10:30 边界、手动切换、快手点子入池、抽签与今日盖章持久化',
   )
@@ -627,6 +779,15 @@ async function checkDesktop(browser, base) {
       0,
       '文字灵感卡片重复了封面文案',
     )
+    assert.equal(
+      await page.locator('#main .filters').isVisible(),
+      false,
+      '桌面主区重复显示分类条',
+    )
+    assert.equal(
+      await page.locator('.side-categories button:visible').count(),
+      6,
+    )
     const style = await page.locator('.sidebar').evaluate((node) => ({
       width: document.documentElement.scrollWidth,
       bgcolor: getComputedStyle(node).backgroundColor,
@@ -699,6 +860,14 @@ async function run() {
       '手机视口或触屏参数错误',
     )
     await page.clock.setFixedTime(new Date('2026-11-28T12:00:00+08:00'))
+    const photo = page.locator('.entry-card .card-cover img').first()
+    await photo.waitFor()
+    assert(
+      await photo.evaluate(
+        (el) => el.getBoundingClientRect().top < innerHeight * 0.5,
+      ),
+      '手记首图未在上半屏露出',
+    )
     await seedLocalWishes(page)
     for (const item of pages) {
       await turnTo(page, item.id)
@@ -723,10 +892,15 @@ async function run() {
       field: '[data-title]',
       save: '记下来',
     })
+    await checkPlanResponse(page)
+    await checkJournalPolish(page)
+    await checkSettings(page)
     await checkStickers(page)
     await checkBreakfast(page)
     await checkVoice(page)
     await checkDesktop(browser, base)
+    await checkTwoDevices(browser, base, screenshot)
+    await checkPwaUpdates(browser)
     assert.deepEqual(failures, [], '浏览器错误或意外网络请求')
     pass('移动端验收全部通过 · ' + screenshotCount + ' 张截图 · ' + screenshots)
   } finally {

@@ -3,6 +3,8 @@ import { blobDataUrl, dataMediaBinary } from './media-store.js'
 const preferenceKey = 'little-days.device-ai.v1'
 const photoLimit = 200 * 1024
 const maxSide = 1024
+const thumbnailLimit = 40 * 1024
+const thumbnailSide = 480
 
 function endpointInfo(value) {
   let url
@@ -150,7 +152,7 @@ function drawJpeg(image, width, height, quality) {
   )
 }
 
-export async function compressJournalPhoto(input) {
+async function withDecodedPhoto(input, work) {
   const original = fileBlob(input, 'image')
   if (original.type === 'image/svg+xml') throw new Error('请选择照片文件。')
   const url = URL.createObjectURL(original)
@@ -158,30 +160,69 @@ export async function compressJournalPhoto(input) {
     const image = new Image()
     image.src = url
     await image.decode()
-    const longSide = Math.max(image.naturalWidth, image.naturalHeight)
-    if (!longSide) throw new Error('无法读取照片尺寸。')
-    if (
-      longSide <= maxSide &&
-      original.size <= photoLimit &&
-      original.type === 'image/jpeg' &&
-      plainJpeg(new Uint8Array(await original.arrayBuffer()))
-    ) {
-      return typeof input === 'string' ? input : blobDataUrl(original)
-    }
-    let scale = Math.min(1, maxSide / longSide)
-    for (;;) {
-      const w = Math.max(1, Math.round(image.naturalWidth * scale))
-      const h = Math.max(1, Math.round(image.naturalHeight * scale))
-      for (const quality of [0.84, 0.72, 0.58]) {
-        const blob = await drawJpeg(image, w, h, quality)
-        if (blob.size <= photoLimit || (w === 1 && h === 1))
-          return blobDataUrl(blob)
-      }
-      scale *= 0.78
-    }
+    if (!image.naturalWidth || !image.naturalHeight)
+      throw new Error('无法读取照片尺寸。')
+    return await work(image, original)
   } finally {
     URL.revokeObjectURL(url)
   }
+}
+
+async function sizedJpeg(image, original, edge, budget) {
+  const longSide = Math.max(image.naturalWidth, image.naturalHeight)
+  if (
+    longSide <= edge &&
+    original.size <= budget &&
+    original.type === 'image/jpeg' &&
+    plainJpeg(new Uint8Array(await original.arrayBuffer()))
+  )
+    return original
+
+  let scale = Math.min(1, edge / longSide)
+  for (;;) {
+    const w = Math.max(1, Math.round(image.naturalWidth * scale))
+    const h = Math.max(1, Math.round(image.naturalHeight * scale))
+    for (const quality of [0.84, 0.72, 0.58]) {
+      const blob = await drawJpeg(image, w, h, quality)
+      if (blob.size <= budget || (w === 1 && h === 1)) return blob
+    }
+    scale *= 0.78
+  }
+}
+
+function photoDataUrl(blob, original, input) {
+  return blob === original && typeof input === 'string'
+    ? input
+    : blobDataUrl(blob)
+}
+
+export function compressJournalPhoto(input) {
+  return withDecodedPhoto(input, async (image, original) =>
+    photoDataUrl(
+      await sizedJpeg(image, original, maxSide, photoLimit),
+      original,
+      input,
+    ),
+  )
+}
+
+export function prepareJournalPhoto(input) {
+  return withDecodedPhoto(input, async (image, original) => {
+    const detail = await sizedJpeg(image, original, maxSide, photoLimit)
+    const thumbnail = await sizedJpeg(
+      image,
+      original,
+      thumbnailSide,
+      thumbnailLimit,
+    )
+    return { image: await photoDataUrl(detail, original, input), thumbnail }
+  })
+}
+
+export function makeJournalThumbnail(input) {
+  return withDecodedPhoto(input, (image, original) =>
+    sizedJpeg(image, original, thumbnailSide, thumbnailLimit),
+  )
 }
 
 export async function readPhotoTextLocally(image) {

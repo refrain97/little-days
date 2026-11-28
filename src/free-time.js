@@ -1,6 +1,7 @@
+import { showEditor, usesMobileShell } from './dialog-viewport.js'
 import { authorBadge } from './cloud-profile.js'
 import { icon } from './icons.js'
-import { mediaAttributes } from './storage.js'
+import { photoAttributes } from './gallery.js'
 
 const kinds = {
   wish: '想做',
@@ -85,7 +86,7 @@ function ideaCard(item, index) {
     <span class="ft-idea-copy"><span class="ft-kicker">${icon(index === 0 ? 'sun' : 'sparkle', 14)}${escape(category)} ${authorBadge(item)}</span>
       <strong>${escape(item.title)}</strong>${item.detail ? `<span class="ft-reason">${escape(item.detail)}</span>` : ''}
       <span class="ft-idea-more" aria-hidden="true">${icon('arrow', 17)}</span>
-    </span>${hasPhoto ? `<span class="ft-idea-img"><img ${mediaAttributes(item.image)} alt="" decoding="async"></span>` : ''}
+    </span>${hasPhoto ? `<span class="ft-idea-img"><img ${photoAttributes(item.image, { thumbnail: true, lazy: index > 0 })} alt=""></span>` : ''}
   </button>`
 }
 
@@ -356,7 +357,7 @@ export function openPlanEditor({
     if (!$('.ft-confirm').hidden) return
     if (!title.value.trim()) {
       setError('给这件事起个名字吧。')
-      title.focus()
+      if (!usesMobileShell()) title.focus()
       return
     }
     const fields = {
@@ -395,7 +396,16 @@ export function openPlanEditor({
   )
   document.body.classList.add('ft-edit-open')
   document.body.append(dialog)
-  dialog.showModal()
-  title.focus({ preventScroll: true })
+  dialog.addEventListener(
+    'invalid',
+    (event) => {
+      if (!usesMobileShell()) return
+      event.preventDefault()
+      setError(event.target === title ? '给这件事起个名字吧。' : '请选择日期。')
+      event.target.scrollIntoView({ block: 'nearest' })
+    },
+    true,
+  )
+  showEditor(dialog, $('.ft-fields'), title)
   return dialog
 }

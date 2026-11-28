@@ -8,6 +8,11 @@
     "dev": "node server.mjs",
     "start": "node server.mjs",
     "build": "node scripts/build.mjs",
-    "preview": "node server.mjs --preview"
+    "preview": "node server.mjs --preview",
+    "qa:mobile": "node scripts/mobile-qa.mjs",
+    "prepare": "node scripts/install-hooks.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
   }
 }

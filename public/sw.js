@@ -3,7 +3,9 @@ const revision = '__SITE_REVISION__'
 const files = /*__SITE_FILES__*/ []
 const scope = self.registration.scope
 const indexURL = new URL('index.html', scope).href
-const assets = new Set(files.map((file) => new URL(file, scope).href))
+const assets = new Map(
+  files.map(([name, digest]) => [new URL(name, scope).href, digest]),
+)
 let connection
 
 function database() {
@@ -37,29 +39,53 @@ function finished(transaction) {
   })
 }
 
+async function fetchReleaseAsset(url, digest, prior) {
+  if (prior) {
+    const cached = await cachedAsset(url, prior)
+    if (cached?.digest === digest) return { url, ...cached }
+  }
+  // First revalidate the normal URL to reuse the browser's initial page load.
+  // A versioned retry covers an edge cache serving files from the previous release.
+  for (const address of [url, url + '?v=' + digest.slice(0, 16)]) {
+    const response = await fetch(address, {
+      cache: 'no-cache',
+      credentials: 'omit',
+      redirect: 'error',
+    })
+    if (!response.ok) continue
+    const bytes = await response.arrayBuffer()
+    const actual = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+    if (
+      Array.from(actual, (byte) => byte.toString(16).padStart(2, '0')).join(
+        '',
+      ) !== digest
+    )
+      continue
+    const headers = new Headers(response.headers)
+    headers.delete('content-encoding')
+    headers.delete('content-length')
+    return { url, headers: [...headers], bytes, digest }
+  }
+  throw new Error('离线文件尚未全部更新。')
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
-      // Keep the previous release available if even one download or write fails.
-      const entries = await Promise.all(
-        [...assets].map(async (url) => {
-          const response = await fetch(url, {
-            cache: 'no-store',
-            credentials: 'omit',
-            redirect: 'error',
-          })
-          if (!response.ok) throw new Error('离线文件未能下载。')
-          const headers = new Headers(response.headers)
-          headers.delete('content-encoding')
-          headers.delete('content-length')
-          return {
-            url,
-            headers: [...headers],
-            bytes: await response.arrayBuffer(),
-          }
-        }),
-      )
       const db = await database()
+      const prior = await new Promise((resolve, reject) => {
+        const get = db
+          .transaction('settings')
+          .objectStore('settings')
+          .get('active')
+        get.onsuccess = () => resolve(get.result)
+        get.onerror = () => reject(get.error)
+      })
+      const entries = await Promise.all(
+        [...assets].map(([url, digest]) =>
+          fetchReleaseAsset(url, digest, prior),
+        ),
+      )
       const tx = db.transaction('assets', 'readwrite')
       const complete = finished(tx)
       for (const { url, ...entry } of entries)
@@ -98,13 +124,13 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-async function cachedAsset(url) {
+async function cachedAsset(url, version = revision) {
   const db = await database()
   return new Promise((resolve, reject) => {
     const get = db
       .transaction('assets')
       .objectStore('assets')
-      .get([revision, url])
+      .get([version, url])
     get.onsuccess = () => resolve(get.result)
     get.onerror = () => reject(get.error)
   })

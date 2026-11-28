@@ -1,3 +1,4 @@
+import { demoPhotoNames } from '../src/paths.js'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -8,18 +9,6 @@ const publicDir = resolve(root, 'public')
 
 // Include matching demo art individually so an export or a personal photo copied
 // into public/ can never be uploaded to Pages by a recursive directory copy.
-const images = [
-  'breakfast',
-  'hero',
-  'iced-latte',
-  'idea-lemon-noodles',
-  'idea-tomato-noodles',
-  'noodles',
-  'tomato-eggs',
-  'venue-cafe',
-  'venue-noodles',
-  'walk',
-]
 const icons = [
   'apple-touch-icon.png',
   'flower.svg',
@@ -29,7 +18,7 @@ const icons = [
 const publicAssets = [
   'manifest.json',
   ...icons.map((name) => 'icons/' + name),
-  ...images.map((name) => 'images/' + name + '.jpg'),
+  ...demoPhotoNames.map((name) => 'images/' + name + '.webp'),
 ]
 
 async function readAsset(file) {
@@ -86,15 +75,19 @@ export async function collectSite() {
   files.set('manifest.webmanifest', files.get('manifest.json'))
   const names = [...files.keys()].sort()
   const template = (await readAsset(resolve(publicDir, 'sw.js'))).toString()
-  const hash = createHash('sha256').update(template)
-  for (const name of names)
-    hash
-      .update(name + '\0')
-      .update(files.get(name))
-      .update('\0')
+  const manifestFiles = names.map((name) => [
+    name,
+    createHash('sha256').update(files.get(name)).digest('hex'),
+  ])
+  const release = JSON.stringify(manifestFiles)
+  const revision = createHash('sha256')
+    .update(template)
+    .update(release)
+    .digest('hex')
+    .slice(0, 20)
   const worker = template
-    .replace('__SITE_REVISION__', hash.digest('hex').slice(0, 20))
-    .replace('/*__SITE_FILES__*/ []', JSON.stringify(names))
+    .replace('__SITE_REVISION__', revision)
+    .replace('/*__SITE_FILES__*/ []', release)
   files.set('sw.js', Buffer.from(worker))
   return files
 }

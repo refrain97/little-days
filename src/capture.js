@@ -1,6 +1,7 @@
+import { showEditor, usesMobileShell } from './dialog-viewport.js'
 import {
   getAISettings,
-  compressJournalPhoto,
+  prepareJournalPhoto,
   readPhotoTextLocally,
   requestDeviceAI,
 } from './device-ai.js'
@@ -171,6 +172,7 @@ export function openCapture({
     privateOnly || record?.visibility === 'private' ? 'private' : 'shared'
   const previews = new Map()
   let photo = record?.image || ''
+  let photoThumbnail = null
   let audio = record?.audio || ''
   let photoText = record?.photoDescription || ''
   const unverifiedOriginal =
@@ -539,16 +541,17 @@ export function openCapture({
     photoBusy = true
     showStatus('[data-photo-status]', '正在设备上处理照片…')
     try {
-      const prepared = await compressJournalPhoto(file)
+      const prepared = await prepareJournalPhoto(file)
       if (disposed || version !== photoVersion) return
-      photo = prepared
+      photo = prepared.image
+      photoThumbnail = prepared.thumbnail
       photoText = ''
       aiPhoto = null
       refreshMedia()
       refreshExtraction()
       showStatus('[data-photo-status]', '照片已准备好，可以保存。')
       // Local OCR is optional. Saving never waits for the detector.
-      void readPhotoTextLocally(prepared).then((text) => {
+      void readPhotoTextLocally(prepared.image).then((text) => {
         if (disposed || saving || version !== photoVersion || !text || aiPhoto)
           return
         photoText = text
@@ -582,6 +585,7 @@ export function openCapture({
     cancelAI()
     photoBusy = false
     photo = ''
+    photoThumbnail = null
     photoText = ''
     aiPhoto = null
     showStatus('[data-photo-status]', '')
@@ -1074,7 +1078,7 @@ export function openCapture({
             : '写一句话、拍张照片，或留一段语音吧。',
         )
         $('.lc-scroll').inert = false
-        editor.focus()
+        if (!usesMobileShell()) editor.focus()
         return
       }
       refreshExtraction()
@@ -1117,7 +1121,7 @@ export function openCapture({
                 ? 'photo'
                 : 'text',
       })
-      await onSave?.(entry)
+      await onSave?.(photoThumbnail ? { ...entry, photoThumbnail } : entry)
       dialog.close()
     } catch (error) {
       showStatus(
@@ -1141,8 +1145,6 @@ export function openCapture({
   updateVoice()
   refreshMedia()
   refreshExtraction()
-  dialog.showModal()
-  if (source === 'text') editor.focus({ preventScroll: true })
-  else $('[data-close]').focus({ preventScroll: true })
+  showEditor(dialog, $('.lc-scroll'), source === 'text' ? editor : null)
   return dialog
 }

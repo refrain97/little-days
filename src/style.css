@@ -1391,14 +1391,39 @@ h1 {
 }
 @media (max-width: 760px),
   (hover: none) and (max-width: 1000px) and (max-height: 520px) {
+  html,
+  body,
+  #app {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    border-top: env(safe-area-inset-top, 0px) solid #483345;
+  }
   .sidebar {
     display: none;
   }
-  main {
+  #main {
+    flex: 1 1 0%;
+    min-width: 0;
+    min-height: 0;
     margin-left: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  body:is(.has-overlay, .lc-open, .ft-edit-open) #main {
+    overflow: hidden;
+    touch-action: none;
   }
   .page {
-    padding: 22px 19px 95px;
+    padding: 22px 19px 28px;
   }
   .mobile-brand {
     height: 55px;
@@ -1636,16 +1661,11 @@ h1 {
     height: 12px;
   }
   .bottom-nav {
-    position: fixed;
-    z-index: 4;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-around;
     background: #fffdf8f5;
-    backdrop-filter: blur(12px);
     border-top: 1px solid #e6dbcf;
     padding: 5px 10px max(5px, env(safe-area-inset-bottom));
   }
@@ -2110,10 +2130,8 @@ h1 {
 @media (max-width: 760px),
   (hover: none) and (max-width: 1000px) and (max-height: 520px) {
   .mobile-brand {
-    height: calc(55px + env(safe-area-inset-top, 0px));
-    padding: env(safe-area-inset-top, 0px)
-      calc(18px + env(safe-area-inset-right, 0px)) 0
-      calc(18px + env(safe-area-inset-left, 0px));
+    padding-left: calc(18px + env(safe-area-inset-left, 0px));
+    padding-right: calc(18px + env(safe-area-inset-right, 0px));
   }
   .bottom-nav {
     padding: 5px calc(12px + env(safe-area-inset-right, 0px))
@@ -2127,7 +2145,87 @@ h1 {
     padding-right: calc(
       clamp(14px, 4.7vw, 19px) + env(safe-area-inset-right, 0px)
     );
-    padding-bottom: calc(87px + env(safe-area-inset-bottom, 0px));
+  }
+  .overlay-bg,
+  .life-capture[open],
+  .ft-editor[open] {
+    inset: var(--visible-top, 0px) auto auto var(--visible-left, 0px);
+    width: var(--visible-width, 100%);
+    height: 100vh;
+    height: var(--visible-height, 100dvh);
+  }
+  .life-capture[open],
+  .ft-editor[open] {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overscroll-behavior: none;
+  }
+  .life-capture[open] .lc-form,
+  .ft-editor[open] .ft-editor-form {
+    width: 100%;
+    min-width: 0;
+    max-height: min(95%, calc(100% - env(safe-area-inset-top, 0px)));
+    overflow: hidden;
+    border-top: 1px solid #e3d6cb;
+    border-radius: 23px 23px 0 0;
+    background: var(--lc-paper, #fffaf2);
+    box-shadow: 0 24px 90px #412a3940;
+  }
+  .ft-editor[open] .ft-editor-form {
+    max-height: min(94%, calc(100% - env(safe-area-inset-top, 0px)));
+    border-color: #dfd1c4;
+    border-radius: 21px 21px 0 0;
+    box-shadow: 0 22px 72px #3f2a383b;
+    --sheet-gutter: 24px;
+  }
+  .life-capture[open] .lc-head,
+  .ft-editor[open] footer {
+    flex: none;
+  }
+  .life-capture[open] .lc-scroll,
+  .ft-editor[open] .ft-fields {
+    min-height: 0;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .life-capture[open] :is(input, textarea),
+  .ft-editor[open] input {
+    font-size: 16px;
+  }
+  .life-capture[open] :is(.lc-head, .lc-scroll, .lc-footer),
+  .ft-editor[open] :is(header, .ft-fields, footer) {
+    padding-left: max(var(--sheet-gutter, 21px), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--sheet-gutter, 21px), env(safe-area-inset-right, 0px));
+  }
+  .life-capture[open] .lc-footer {
+    padding-bottom: max(17px, env(safe-area-inset-bottom, 0px));
+  }
+  .ft-editor[open] footer {
+    padding-bottom: max(18px, env(safe-area-inset-bottom, 0px));
+  }
+  .life-capture[data-short-viewport] .lc-head,
+  .ft-editor[data-short-viewport] header {
+    padding-block: 5px;
+  }
+  .life-capture[data-short-viewport] .lc-date {
+    display: none;
+  }
+  .life-capture[data-short-viewport] .lc-footer,
+  .ft-editor[data-short-viewport] footer {
+    padding-top: 4px;
+    padding-bottom: max(5px, env(safe-area-inset-bottom, 0px));
+  }
+  .life-capture[data-short-viewport] textarea {
+    min-height: 40px;
+    max-height: max(40px, calc(var(--visible-height) - 125px));
   }
   .overlay-bg {
     padding: max(14px, env(safe-area-inset-top))
@@ -2391,4 +2489,13 @@ h1 {
   margin-right: 0.6rem;
   color: var(--plum);
   text-underline-offset: 0.18em;
+}
+
+/* Image slots already have a fixed height or aspect ratio across the three views. */
+:where(.card-cover, .detail-photo, .hero-photo, .vn-cover, .vn-detail-photo, .ft-idea-img):has(> img[data-gallery-photo]) {
+  background: linear-gradient(112deg, #efe8dd, #f6f0e7 48%, #eee6da);
+}
+img[data-gallery-photo]:not([data-ready]):not([data-image-error]),
+img[data-gallery-photo][data-local-media]:not([src]) {
+  opacity: 0;
 }

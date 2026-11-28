@@ -1,0 +1,35 @@
+#!/bin/sh
+# Test the version actually being pushed, even with uncommitted edits in the checkout.
+set -eu
+root=$(git rev-parse --show-toplevel)
+temp=$(mktemp -d)
+trap 'rm -rf "$temp"' EXIT
+trap 'exit 1' INT TERM HUP
+seen=' '
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  revision=$(git rev-parse --verify "$local_sha^{commit}" 2>/dev/null) || continue
+  case "$seen" in *" $revision "*) continue ;; esac
+  seen="$seen$revision "
+  checkout="$temp/$revision"
+  mkdir "$checkout"
+  git archive --format=tar --output="$temp/revision.tar" "$revision"
+  tar -xf "$temp/revision.tar" -C "$checkout"
+  # Historical refs that predate the mobile gate have no QA script to run.
+  if [ ! -f "$checkout/scripts/mobile-qa.mjs" ]; then
+    if [ -f "$root/scripts/mobile-qa.mjs" ]; then
+      checkout_qa="$root/scripts/mobile-qa.mjs"
+    else
+      continue
+    fi
+  else
+    checkout_qa="$checkout/scripts/mobile-qa.mjs"
+    if [ -d "$root/node_modules/playwright" ] && cmp -s "$root/package-lock.json" "$checkout/package-lock.json"; then
+      ln -s "$root/node_modules" "$checkout/node_modules"
+    else
+      (cd "$checkout" && npm ci --ignore-scripts --no-audit --no-fund)
+    fi
+  fi
+  echo "手机端推送前验收 · $revision"
+  (cd "$checkout" && MOBILE_QA_SCREENSHOTS="$root/qa-screenshots" node "$checkout_qa")
+done

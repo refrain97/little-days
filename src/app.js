@@ -1,3 +1,4 @@
+import { fitDialogViewport, usesMobileShell } from './dialog-viewport.js'
 import {
   CATEGORIES,
   INSPIRATIONS as recipes,
@@ -24,7 +25,9 @@ import {
   putPlaceProfile,
   deletePlaceProfile,
 } from './storage.js'
-import { appPath } from './paths.js'
+import { photoAttributes, observeGallery } from './gallery.js'
+import { registerOfflineShell } from './offline-shell.js'
+import { bundledPhotoPath } from './paths.js'
 import { authorBadge } from './cloud-profile.js'
 import { createCloudAdapter, onCloudLocalChange } from './cloud-local.js'
 import { createGitHubSync } from './github-sync.js'
@@ -60,9 +63,9 @@ import {
 } from './venues.js'
 
 const recipePhotos = {
-  'idea-tomato-noodles': '/images/idea-tomato-noodles.jpg',
-  'idea-honey-toast': '/images/breakfast.jpg',
-  'idea-lemon-noodles': '/images/idea-lemon-noodles.jpg',
+  'idea-tomato-noodles': '/images/idea-tomato-noodles.webp',
+  'idea-honey-toast': '/images/breakfast.webp',
+  'idea-lemon-noodles': '/images/idea-lemon-noodles.webp',
 }
 const INSPIRATIONS = recipes.map((recipe) => ({
   ...recipe,
@@ -191,8 +194,8 @@ const catTag = (cat) =>
   icon(catIcon(cat), 13) +
   html(cat) +
   '</span>'
-const img = (src, alt, cls = '') =>
-  `<img class="${html(cls)}" ${mediaAttributes(src)} alt="${html(alt)}" decoding="async" draggable="false">`
+const img = (src, alt, options) =>
+  `<img ${photoAttributes(src, options)} alt="${html(alt)}" draggable="false">`
 function toast(text) {
   const el = document.querySelector('#notice')
   el.textContent = text
@@ -399,8 +402,8 @@ function homePick() {
     title: entry.title,
     description,
     photo:
-      entry.image === '/images/tomato-eggs.jpg'
-        ? '/images/hero.jpg'
+      bundledPhotoPath(entry.image) === '/images/tomato-eggs.webp'
+        ? '/images/hero.webp'
         : entry.image,
     ticket: fresh ? '新灵感' : drink ? '自制饮品' : '拿手菜',
     fresh,
@@ -476,14 +479,14 @@ function hero(mode = diningMode()) {
       </div>
       <svg class="hero-scribble" viewBox="0 0 71 37" aria-hidden="true"><path d="M3 23c13 10 40 7 39-7-1-9-15-8-13 1 3 10 19 11 36-5m-10 1 10-2-1 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
-    <div class="hero-photo ${pick.photo ? '' : 'hero-no-photo'}">${pick.photo ? img(pick.photo, pick.alt || pick.ticket) : icon(out ? 'store' : 'chef', 90)}</div>
+    <div class="hero-photo ${pick.photo ? '' : 'hero-no-photo'}">${pick.photo ? img(pick.photo, pick.alt || pick.ticket, { thumbnail: true, lazy: false, priority: true }) : icon(out ? 'store' : 'chef', 90)}</div>
     ${pick.ticket ? `<div class="dish-ticket">${icon(pick.ticketIcon || (pick.fresh ? 'sparkle' : 'star'), 14)}${html(pick.ticket)}</div>` : ''}
   </section>`
 }
-function card(entry) {
+function card(entry, eager = false) {
   const excerpt = entry.text || entry.notes || entry.feeling
   const cover = entry.image
-    ? img(entry.image, entry.title)
+    ? img(entry.image, entry.title, { thumbnail: true, lazy: !eager })
     : `<div class="no-photo ${catClass(entry.category)}">${excerpt ? `<span class="paper-line">${html(excerpt)}</span>` : icon(catIcon(entry.category), 40)}</div>`
   return (
     '<article class="entry-card"><button class="card-open" ' +
@@ -620,7 +623,7 @@ function cardArea() {
       '<div class="timeline">' +
       [...groups.values()]
         .map(
-          (group) =>
+          (group, groupIndex) =>
             '<section><h3><i></i>' +
             localDate(group[0].createdAt) +
             ' <small>' +
@@ -629,14 +632,14 @@ function cardArea() {
               year: 'numeric',
             }) +
             '</small></h3><div class="entry-grid list">' +
-            group.map(card).join('') +
+            group.map((entry, i) => card(entry, groupIndex === 0 && i < 2)).join('') +
             '</div></section>',
         )
         .join('') +
       '</div>'
     )
   }
-  return `<div class="entry-grid">${list.map(card).join('')}</div>`
+  return `<div class="entry-grid">${list.map((entry, i) => card(entry, i < 2)).join('')}</div>`
 }
 function journal() {
   const count = filteredEntries().length
@@ -681,7 +684,7 @@ function kitchen() {
       <div class="kitchen-places">${places.length ? renderVenueCards(places.slice(0, 3)) : `<button class="add-visit" ${action('add-out')}>${icon('plus', 17)}记下第一家店</button>`}</div>
     </section>
     <section class="journal"><div class="journal-heading"><h2>拿手菜</h2><span class="entry-count">${known.length} 篇</span></div>
-      ${known.length ? `<div class="entry-grid kitchen-grid">${known.map(card).join('')}</div>` : '<p class="empty">把自己做过的菜或饮品标成「下次再来」，就会出现在这里。</p>'}
+      ${known.length ? `<div class="entry-grid kitchen-grid">${known.map((entry) => card(entry)).join('')}</div>` : '<p class="empty">把自己做过的菜或饮品标成「下次再来」，就会出现在这里。</p>'}
     </section>
     <section class="journal"><div class="journal-heading"><h2>换个新口味</h2></div><div class="ideas">
       ${INSPIRATIONS.filter((e) => e.meal === meal)
@@ -905,7 +908,8 @@ function viewPlan(value) {
   )
 }
 
-function render() {
+function render({ resetScroll = false } = {}) {
+  const scrollTop = resetScroll ? 0 : app.querySelector('#main')?.scrollTop || 0
   const archiveOpen =
     section === 'free' && app.querySelector('.ft-archive')?.open
   if (
@@ -967,6 +971,7 @@ function render() {
   updateSyncNotice(cloud.status())
   updateBackupReminder()
   if (archiveOpen) app.querySelector('.ft-archive').open = true
+  if (scrollTop) app.querySelector('#main').scrollTop = scrollTop
 }
 function moveTo(route) {
   const [path, filters] = route.split('?')
@@ -997,8 +1002,8 @@ function moveTo(route) {
   findOpen = false
   suggestionIndex = 0
   meal = mealNow()
-  render()
-  window.scrollTo({ top: 0, behavior: 'instant' })
+  render({ resetScroll: true })
+  if (!usesMobileShell()) window.scrollTo({ top: 0, behavior: 'instant' })
 }
 function rememberJournalView() {
   setPreference('layout', layout)
@@ -1011,7 +1016,9 @@ function navigate(id) {
     moveTo(id)
   else location.hash = id
 }
+let releaseOverlayViewport
 function lockOverlay(contents, label) {
+  releaseOverlayViewport?.()
   if (!overlay.firstElementChild) previousFocus = document.activeElement
   overlay.innerHTML =
     '<div class="overlay-bg"><section class="sheet" role="dialog" aria-modal="true" aria-label="' +
@@ -1020,9 +1027,18 @@ function lockOverlay(contents, label) {
     contents +
     '</section></div>'
   document.body.classList.add('has-overlay')
+  app.inert = true
+  releaseOverlayViewport = fitDialogViewport(
+    overlay.firstElementChild,
+    overlay.querySelector('.sheet'),
+  )
   overlay.querySelector('button')?.focus({ preventScroll: true })
 }
 function closeOverlay() {
+  if (!overlay.firstElementChild) return
+  releaseOverlayViewport?.()
+  releaseOverlayViewport = undefined
+  app.inert = false
   overlay.innerHTML = ''
   activeDetail = ''
   document.body.classList.remove('has-overlay')
@@ -1482,13 +1498,17 @@ async function handleAction(key, value) {
   if (key === 'renew-space') {
     settings()
     overlay.querySelector('[data-space-setup]').open = true
-    overlay.querySelector('[data-space-token]').focus()
+    const token = overlay.querySelector('[data-space-token]')
+    if (usesMobileShell()) token.scrollIntoView({ block: 'nearest' })
+    else token.focus()
     return
   }
   if (key === 'connect-space') {
     settings()
     overlay.querySelector('[data-space-setup]').open = true
-    overlay.querySelector('[data-space-repo]').focus()
+    const repo = overlay.querySelector('[data-space-repo]')
+    if (usesMobileShell()) repo.scrollIntoView({ block: 'nearest' })
+    else repo.focus()
     return
   }
   if (key === 'settings') {
@@ -1576,6 +1596,7 @@ document.addEventListener('keydown', (e) => {
   }
 })
 async function init() {
+  observeGallery()
   observeLocalMedia()
   try {
     const notebook = await Promise.all([
@@ -1627,7 +1648,4 @@ window.addEventListener('hashchange', () => {
   moveTo(location.hash.slice(1))
 })
 init()
-if ('serviceWorker' in navigator)
-  window.addEventListener('load', () =>
-    navigator.serviceWorker.register(appPath('sw.js')).catch(() => {}),
-  )
+registerOfflineShell()

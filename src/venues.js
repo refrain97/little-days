@@ -1,6 +1,6 @@
 import { authorBadge } from './cloud-profile.js'
 import { icon } from './icons.js'
-import { mediaAttributes } from './storage.js'
+import { photoAttributes } from './gallery.js'
 
 const characters = {
   '&': '&amp;',
@@ -42,8 +42,8 @@ function average(venue) {
 }
 
 const sampleStorefronts = {
-  'sample-venue-shanjian': '/images/venue-cafe.jpg',
-  'sample-venue-xiaoman': '/images/venue-noodles.jpg',
+  'sample-venue-shanjian': '/images/venue-cafe.webp',
+  'sample-venue-xiaoman': '/images/venue-noodles.webp',
 }
 export function venuePhoto(entries) {
   const example = entries.find(
@@ -99,7 +99,7 @@ function venueCard(venue) {
     .join(' · ')
   return `<button type="button" class="vn-card" data-action="open-venue" data-value="${html(key)}">
     <span class="vn-cover${image ? '' : ' vn-swatch'}">
-      ${image ? `<img ${mediaAttributes(image)} alt="" loading="lazy" decoding="async">` : icon('store', 45)}
+      ${image ? `<img ${photoAttributes(image, { thumbnail: true })} alt="">` : icon('store', 45)}
       ${authorBadge(venue.profile)}<span class="vn-count">${icon('book', 13)}${entries.length} 条手记${entries.length && entries.every((entry) => entry.isSample) ? ' · 示例' : ''}</span>
     </span>
     <span class="vn-card-body">
@@ -158,7 +158,7 @@ function venueDetail(venue, renderCard) {
           ${entries[0] ? `<button type="button" class="vn-revisit" data-action="memory-plan" data-value="${html(entries[0].id)}">${icon('sprout', 15)}改天再去</button>` : ''}</div>
         </div>
       </div>
-      ${image ? `<div class="vn-detail-photo"><img ${mediaAttributes(image)} alt="" decoding="async"></div>` : ''}
+      ${image ? `<div class="vn-detail-photo"><img ${photoAttributes(image)} alt=""></div>` : ''}
     </div>
     <div class="vn-sectionline"><h2>这家店的手记</h2><span class="entry-count">${entries.length} 条</span></div>
     <div class="entry-grid">${entries.map((entry) => renderCard(entry)).join('')}</div>

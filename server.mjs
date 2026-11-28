@@ -32,7 +32,7 @@ const mime = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/manifest+json',
   '.webmanifest': 'application/manifest+json',
-  '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
 }

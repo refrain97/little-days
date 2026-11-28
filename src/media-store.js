@@ -21,13 +21,19 @@ export function canDisplayMedia(url) {
         Boolean(dataMediaType(url, 'image') || dataMediaType(url, 'audio'))))
   )
 }
-export function mediaAttributes(url) {
+export function mediaAttributes(url, size) {
   if (!canDisplayMedia(url)) return ''
   const safe = String(isLocalMedia(url) ? url : assetPath(url)).replace(
     /[&<>"']/g,
     (ch) => escapes[ch],
   )
-  return (isLocalMedia(url) ? 'data-local-media' : 'src') + '="' + safe + '"'
+  if (!isLocalMedia(url)) return 'src="' + safe + '"'
+  return (
+    'data-local-media="' +
+    safe +
+    '"' +
+    (size === 'thumbnail' ? ' data-media-size="thumbnail"' : '')
+  )
 }
 
 export function dataMediaType(value, kind) {
@@ -88,6 +94,7 @@ let stopObserving
 export function observeMedia(readBlob) {
   if (stopObserving) return stopObserving
   const active = new Map()
+  const recentPreviews = new Set()
   const selector = 'img[data-local-media],audio[data-local-media]'
   function release(el) {
     const state = active.get(el)
@@ -95,8 +102,12 @@ export function observeMedia(readBlob) {
     state.token++
     state.pending = false
     if (!state.objectUrl) return
-    el.removeAttribute('src')
-    if (el.tagName === 'AUDIO') el.load()
+    if (el.getAttribute('src') === state.objectUrl) {
+      el.removeAttribute('data-ready')
+      el.removeAttribute('data-image-error')
+      el.removeAttribute('src')
+      if (el.tagName === 'AUDIO') el.load()
+    }
     URL.revokeObjectURL(state.objectUrl)
     state.objectUrl = ''
   }
@@ -106,7 +117,7 @@ export function observeMedia(readBlob) {
     const token = ++state.token
     state.pending = true
     try {
-      const blob = await readBlob(state.ref)
+      const blob = await readBlob(state.ref, state.size)
       if (!blob || active.get(el) !== state || state.token !== token) return
       state.objectUrl = URL.createObjectURL(blob)
       el.src = state.objectUrl
@@ -121,23 +132,41 @@ export function observeMedia(readBlob) {
     new IntersectionObserver(
       (changes) => {
         for (const { target, isIntersecting } of changes) {
-          if (isIntersecting) void load(target)
-          else if (target.tagName !== 'AUDIO' || target.paused) release(target)
+          if (isIntersecting) {
+            recentPreviews.delete(target)
+            void load(target)
+          } else if (target.dataset.mediaSize === 'thumbnail') {
+            // A short reverse scroll reuses its previews. A long timeline doesn't
+            // keep a live Blob URL for every card ever seen on this device.
+            const state = active.get(target)
+            if (!state?.objectUrl && !state?.pending) continue
+            recentPreviews.add(target)
+            if (recentPreviews.size > 32) {
+              const oldest = recentPreviews.values().next().value
+              recentPreviews.delete(oldest)
+              release(oldest)
+            }
+          } else if (target.tagName !== 'AUDIO' || target.paused) {
+            release(target)
+          }
         }
       },
       { rootMargin: '220px' },
     )
   function forget(el) {
     viewport && viewport.unobserve(el)
+    recentPreviews.delete(el)
     release(el)
     active.delete(el)
   }
   function watch(el) {
     const ref = el.dataset.localMedia
-    if (active.get(el)?.ref === ref) return
+    const size = el.dataset.mediaSize
+    const old = active.get(el)
+    if (old && old.ref === ref && old.size === size) return
     forget(el)
     if (!isLocalMedia(ref)) return
-    active.set(el, { ref, pending: false, objectUrl: '', token: 0 })
+    active.set(el, { ref, size, pending: false, objectUrl: '', token: 0 })
     if (viewport) viewport.observe(el)
     else void load(el)
   }
@@ -162,7 +191,7 @@ export function observeMedia(readBlob) {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['data-local-media'],
+    attributeFilter: ['data-local-media', 'data-media-size'],
   })
   visit(document, watch)
   stopObserving = () => {

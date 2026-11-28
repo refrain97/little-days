@@ -1,4 +1,5 @@
 import { readProfile } from './cloud-profile.js'
+import { prepareJournalPhoto, makeJournalThumbnail } from './device-ai.js'
 import {
   createEntry,
   upgradeDiningRecords,
@@ -83,6 +84,16 @@ export function announce(event = 'updated', local = false) {
   if (local) for (const fn of listeners) fn(event)
 }
 
+// Each detail has an immutable local ID. A derived preview belongs to that
+// exact version, including when an edit is racing a lazy thumbnail rebuild.
+const thumbnailKey = (imageRef) => imageRef + '/thumbnail'
+
+function deleteMedia(media, ref, kind) {
+  if (!isLocalMedia(ref)) return
+  media.delete(ref)
+  if (kind === 'image') media.delete(thumbnailKey(ref))
+}
+
 export function writeSplit(stores, entry, previous, paths = {}) {
   const { records, media } = stores
   const meta = { ...entry }
@@ -118,7 +129,7 @@ export function writeSplit(stores, entry, previous, paths = {}) {
         media.put(copy.result, meta[kind])
       }
     }
-    if (isLocalMedia(prior)) media.delete(prior)
+    deleteMedia(media, prior, kind)
   }
   records.put(meta)
   return meta
@@ -560,9 +571,7 @@ export async function readRecords() {
     .map((row) => visibleRecord(createEntry(row)))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
-async function readMediaBlob(ref) {
-  const db = await journalDatabase()
-  if (!isLocalMedia(ref)) return null
+async function mediaBlob(db, ref) {
   const value = await requestDone(
     db.transaction('media').objectStore('media').get(ref),
   )
@@ -570,6 +579,62 @@ async function readMediaBlob(ref) {
     ? value
     : new Blob([value.bytes], { type: value.type })
 }
+
+async function cacheThumbnail(db, ref, blob) {
+  const bytes = await blob.arrayBuffer()
+  const tx = db.transaction('media', 'readwrite')
+  const media = tx.objectStore('media')
+  const current = media.getKey(ref)
+  current.onsuccess = () => {
+    if (current.result !== undefined)
+      media.put({ bytes, type: blob.type }, thumbnailKey(ref))
+  }
+  await transactionDone(tx)
+}
+
+const thumbnailJobs = new Map()
+let thumbnailQueue = Promise.resolve()
+
+async function rebuildThumbnail(db, ref) {
+  const original = await mediaBlob(db, ref)
+  if (!original) return null
+  let thumbnail
+  try {
+    thumbnail = await makeJournalThumbnail(original)
+  } catch {
+    // Older backups can contain media that the platform can display but cannot re-encode.
+    return original
+  }
+  // Quota pressure on a derived cache must never hide a readable photo.
+  await cacheThumbnail(db, ref, thumbnail).catch(() => {})
+  return thumbnail
+}
+
+async function loadThumbnail(db, ref) {
+  const cached = await mediaBlob(db, thumbnailKey(ref))
+  if (cached) return cached
+  // Restored phone photos may be several megapixels. Decode only one at a time.
+  const job = thumbnailQueue.then(() => rebuildThumbnail(db, ref))
+  thumbnailQueue = job.then(
+    () => {},
+    () => {},
+  )
+  return job
+}
+
+async function readMediaBlob(ref, size) {
+  if (!isLocalMedia(ref)) return null
+  const db = await journalDatabase()
+  if (size !== 'thumbnail') return mediaBlob(db, ref)
+  if (!thumbnailJobs.has(ref)) {
+    thumbnailJobs.set(
+      ref,
+      loadThumbnail(db, ref).finally(() => thumbnailJobs.delete(ref)),
+    )
+  }
+  return thumbnailJobs.get(ref)
+}
+
 export function observeLocalMedia() {
   return observeMedia(readMediaBlob)
 }
@@ -641,6 +706,19 @@ export async function putRecord(fields, original) {
   const draft = createEntry(fields),
     before = original ? createEntry(original) : null
   const db = await journalDatabase()
+  let thumbnail = null
+  if (draft.image.startsWith('data:') && draft.image !== before?.image) {
+    if (
+      fields.photoThumbnail instanceof Blob &&
+      fields.photoThumbnail.type === 'image/jpeg'
+    ) {
+      thumbnail = fields.photoThumbnail
+    } else {
+      const prepared = await prepareJournalPhoto(draft.image)
+      draft.image = prepared.image
+      thumbnail = prepared.thumbnail
+    }
+  }
   function merge(prior) {
     if (before && !prior)
       throw new Error('这篇手记已被移除，请重新打开手记列表。')
@@ -713,6 +791,9 @@ export async function putRecord(fields, original) {
   } catch (e) {
     throw issue || e
   }
+  if (thumbnail && isLocalMedia(result.image)) {
+    await cacheThumbnail(db, result.image, thumbnail).catch(() => {})
+  }
   announceMutation(tx)
   return result
 }
@@ -726,8 +807,7 @@ export async function removeRecord(id) {
   const req = stores.records.get(id)
   req.onsuccess = () => {
     for (const kind of kinds)
-      if (isLocalMedia(req.result?.[kind]))
-        stores.media.delete(req.result[kind])
+      deleteMedia(stores.media, req.result?.[kind], kind)
     stores.records.delete(id)
     if (req.result?.visibility === 'shared' && !req.result.isSample)
       markOutbox(tx)
@@ -1212,8 +1292,7 @@ export async function applyCloudObject(kind, id, value, accepts, paths = {}) {
       else {
         if (kind === 'entries')
           for (const key of kinds)
-            if (isLocalMedia(current.result?.[key]))
-              tx.objectStore('media').delete(current.result[key])
+            deleteMedia(tx.objectStore('media'), current.result?.[key], key)
         if (kind === 'places' && current.result)
           suppressPlace(tx, current.result)
         table.delete(id)

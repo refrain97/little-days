@@ -17,6 +17,7 @@
 /scripts/*
 !/scripts/build.mjs
 !/scripts/mobile-qa.mjs
+!/scripts/standalone-qa.mjs
 !/scripts/pwa-qa.mjs
 !/scripts/cloud-qa.mjs
 !/scripts/install-hooks.mjs

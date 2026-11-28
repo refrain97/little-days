@@ -9,6 +9,7 @@ import { collectSite } from './build.mjs'
 
 import { checkTwoDevices, checkRecordingMigration } from './cloud-qa.mjs'
 import { checkPwaUpdates } from './pwa-qa.mjs'
+import { checkStandaloneLayout } from './standalone-qa.mjs'
 
 const viewport = { width: 390, height: 844 }
 const screenshots = resolve(
@@ -849,6 +850,40 @@ async function checkQuickNote(page) {
   )
 }
 
+async function checkPhotoCaptions(page) {
+  await page.evaluate(async () => {
+    const { putRecord } = await import('./src/storage.js')
+    const photo = {
+      image: '/images/breakfast.webp',
+      source: 'photo',
+      visibility: 'private',
+      category: '美食',
+    }
+    for (const fields of [
+      { title: '测试餐盘', text: '' },
+      { title: '测试吐司', text: '测试吐司！' },
+      { title: '测试煎蛋', text: '测试煎蛋', notes: '下次多煎半分钟' },
+    ])
+      await putRecord({ ...photo, ...fields })
+  })
+  await page.reload()
+  for (const [title, expected] of [
+    ['测试餐盘', []],
+    ['测试吐司', []],
+    ['测试煎蛋', ['下次多煎半分钟']],
+  ]) {
+    const card = page
+      .locator('.entry-card')
+      .filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+    await card.waitFor()
+    assert.deepEqual(
+      await card.locator('.card-body p').allTextContents(),
+      expected,
+    )
+  }
+  pass('照片卡 · 省去占位行和重复标题，保留独立备注')
+}
+
 async function checkDesktop(browser, base) {
   const desktop = await browser.newContext({
     viewport: { width: 1360, height: 900 },
@@ -1009,7 +1044,9 @@ async function run() {
     await checkBreakfast(page)
     await checkEditorCancel(page)
     await checkQuickNote(page)
+    await checkPhotoCaptions(page)
     await checkDesktop(browser, base)
+    await checkStandaloneLayout(browser, base, screenshot)
     await checkRecordingMigration(browser, base)
     await checkTwoDevices(browser, base, screenshot)
     await checkPwaUpdates(browser)

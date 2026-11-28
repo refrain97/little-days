@@ -9,6 +9,7 @@
   --deep: #4f3929;
   --cream: #fbf5e9;
   --paper: #fffaf0;
+  --nav-paper: #fff7e7;
   --ink: #574232;
   --muted: #826f60;
   --peach: var(--strawberry);
@@ -633,11 +634,19 @@ button,
     margin-bottom: 9px;
   }
   #app {
-    border-top-color: #f9efda;
+    border-top-color: var(--nav-paper);
+  }
+  :root, body {
+    background: var(--nav-paper);
+  }
+  #main {
+    background-color: var(--cream);
+    background-image: radial-gradient(circle, #b59c752c 0.82px, transparent 1px);
+    background-size: 13px 13px;
   }
   .mobile-brand {
     height: 46px;
-    background: #f9efda;
+    background: var(--nav-paper);
     border-bottom: 1.5px solid #ae9170;
     color: var(--cocoa);
   }
@@ -724,7 +733,7 @@ button,
   }
   .bottom-nav {
     border-top: 1.6px solid #a68b6f;
-    background: #fff7e7;
+    background: var(--nav-paper);
     box-shadow: 0 -2px 0 #dbc6a442;
   }
   .bottom-nav .nav-item {

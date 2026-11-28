@@ -2,6 +2,7 @@ import { itemStamps } from './item-stamps.js'
 import { createBreakfastView } from './breakfast.js'
 import { breakfastPeriod } from './breakfast-model.js'
 import { fitDialogViewport, usesMobileShell } from './dialog-viewport.js'
+import { watchHomeScreenInsets } from './home-screen.js'
 import {
   CATEGORIES,
   INSPIRATIONS as recipes,
@@ -519,7 +520,11 @@ function card(entry, eager = false) {
   const taste = entry.taste
     ? '<span>' + html(attitudeLabel(entry.taste)) + '</span>'
     : ''
-  const excerpt = entry.text || entry.notes || entry.feeling
+  const compareText = (value) => value.trim().replace(/[。.!！?？…]+$/u, '').trim()
+  const titleText = compareText(entry.title)
+  const excerpt = [entry.text, entry.notes, entry.feeling].find(
+    (value) => value?.trim() && (!entry.image || compareText(value) !== titleText),
+  )
   const cover = entry.image
     ? img(entry.image, entry.title, { thumbnail: true, lazy: !eager })
     : `<div class="no-photo ${catClass(entry.category)}">${excerpt ? `<span class="paper-line">${html(excerpt)}</span>` : icon(catIcon(entry.category), 40)}</div>`
@@ -540,11 +545,7 @@ function card(entry, eager = false) {
     '</div><h3>' +
     html(entry.title) +
     '</h3>' +
-    (!entry.image && excerpt
-      ? ''
-      : '<p>' +
-        html(excerpt || '查看这篇手记') +
-        '</p>') +
+    (entry.image && excerpt ? '<p>' + html(excerpt) + '</p>' : '') +
     (dining
       ? `<div class="card-rating">${stars}${taste}${sourceLabel(entry)}</div>`
       : '') +
@@ -1710,6 +1711,7 @@ document.addEventListener('keydown', (e) => {
   }
 })
 async function init() {
+  watchHomeScreenInsets(app)
   observeGallery()
   observeLocalMedia()
   try {

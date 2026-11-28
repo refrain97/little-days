@@ -5,8 +5,8 @@
   "lang": "zh-CN",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#fbf5e9",
-  "theme_color": "#f9efda",
+  "background_color": "#fff7e7",
+  "theme_color": "#fff7e7",
   "icons": [
     {
       "src": "./icons/icon-192.png",
@@ -26,5 +26,5 @@
     }
   ],
   "scope": "./",
-  "description": "用照片、声音和文字，记下自己的日常。"
+  "description": "用照片和文字，记下自己的日常。"
 }
